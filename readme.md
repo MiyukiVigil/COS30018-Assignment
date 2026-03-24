@@ -13,7 +13,7 @@
 2. Navigate to the project directory:
    ```bash
    cd COS30018-Assignment
-   ```bash
+   ```
 3. Install the required dependencies:
    ```bash
    mvn install
