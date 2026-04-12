@@ -74,6 +74,7 @@ public class BuyerAgent extends Agent {
         });
     }
 
+    //TODO: Need further clarification on this, maybe there's a better way to implement this.
     private void startNegotiationWithDealer() {
         if (currentDealerIdx < dealers.size()) {
             String dealer = dealers.get(currentDealerIdx);

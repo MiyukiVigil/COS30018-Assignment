@@ -62,6 +62,7 @@ public class BrokerAgent extends Agent {
         });
     }
 
+    //INFO: This function send all of the available dealers to the buyer agent at the time of search?
     private void handleSearch(ACLMessage msg) {
         String target = msg.getContent();
         StringBuilder results = new StringBuilder();
