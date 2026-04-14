@@ -1,11 +1,13 @@
 package org.example.agents;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import org.example.MainUI.UILogger;
+
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
-import java.util.ArrayList;
-import java.util.List;
-import org.example.MainUI.UILogger;
 
 public class BrokerAgent extends Agent {
     private UILogger logger;
@@ -62,6 +64,7 @@ public class BrokerAgent extends Agent {
         });
     }
 
+    //INFO: This function send all of the available seller dealer's offers to the buyer agent at the time of search?
     private void handleSearch(ACLMessage msg) {
         String target = msg.getContent();
         StringBuilder results = new StringBuilder();
