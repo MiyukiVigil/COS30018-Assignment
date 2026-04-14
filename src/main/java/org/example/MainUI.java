@@ -79,15 +79,21 @@ public class MainUI extends Application {
             String timestamp = "[" + LocalTime.now().format(timeFormatter) + "] ";
             final String formattedMsg = timestamp + msg + "\n";
 
-            boolean isBuyerReg = msg.contains("✓ Buyer") && msg.contains("registered");
-            boolean isDealerReg = msg.contains("✓ Dealer") && msg.contains("listed");
+            boolean isBuyerReg = msg.contains("Buyer") && msg.contains("registered");
+            boolean isDealerReg = msg.contains("Dealer") && msg.contains("listed");
             boolean isRevenue = msg.contains("[BROKER] REVENUE:");
             boolean isCycleShift = msg.contains("Cycle Shift:");
+            boolean isSetupMsg = msg.contains("BROKER ONLINE") ||
+                    msg.contains("Transaction Fee") ||
+                    msg.contains("Initializing Space Control");
             boolean isPriceUpdate = msg.contains("has set buying price to RM") ||
                     (msg.contains("has set vehicle") && msg.contains("to RM"));
+            boolean isNegotiationAction = msg.contains("DEAL") || msg.contains("SUCCESS") ||
+                    msg.contains("COUNTER") || msg.contains("OFFER") ||
+                    msg.contains("AGREED") || msg.contains("STATUS:");
 
             Platform.runLater(() -> {
-                if (msg.contains("✓") || msg.contains("DEAL") || isCycleShift) {
+                if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift || isPriceUpdate || isNegotiationAction || isRevenue) {
                     logArea.appendText(formattedMsg);
                 }
 
@@ -260,7 +266,7 @@ public class MainUI extends Application {
         VBox buyerCard = createStatCard("Active Buyers", buyerCountLabel, ACCENT_BLUE);
         VBox dealerCard = createStatCard("Active Dealers", dealerCountLabel, WARNING_ORANGE);
         VBox transactionCard = createStatCard("Deals Closed", transactionCountLabel, SUCCESS_GREEN);
-        VBox revenueCard = createStatCard("Total Revenue", revenueLabel, "#ec4899");
+        VBox revenueCard = createStatCard("Broker's Total Revenue", revenueLabel, "#ec4899");
 
         statsBox.getChildren().addAll(buyerCard, dealerCard, transactionCard, revenueCard);
         HBox.setHgrow(buyerCard, Priority.ALWAYS);
@@ -403,7 +409,7 @@ public class MainUI extends Application {
                 
                 cc.createNewAgent(name, "org.example.agents.BuyerAgent",
                         new Object[]{car, budgetStr, logger}).start();
-                logger.log("✓ Buyer '" + name + "' registered - searching for " + car);
+                logger.log("Buyer '" + name + "' registered - searching for " + car);
                 buyerName.clear();
                 carModel.setValue(null);
                 budget.clear();
@@ -494,7 +500,7 @@ public class MainUI extends Application {
                 
                 cc.createNewAgent(name, "org.example.agents.DealerAgent",
                         new Object[]{car, price, logger}).start();
-                logger.log("✓ Dealer '" + name + "' listed " + car + " @ RM" + price);
+                logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price);
                 dealerName.clear();
                 carModel.setValue(null);
                 retailPrice.clear();
@@ -532,28 +538,33 @@ public class MainUI extends Application {
         analysisArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white;");
         analysisArea.setText(
             "╔════════════════════════════════════════════════════════════╗\n" +
-            "║              📊 MARKET ANALYTICS DASHBOARD                 ║\n" +
+            "║                                      MARKET ANALYTICS DASHBOARD                                        ║\n" + //Modify the space to organise the text
             "╚════════════════════════════════════════════════════════════╝\n\n" +
-            "📈 SYSTEM OVERVIEW:\n" +
+            "SYSTEM OVERVIEW:\n" +
             "  ✓ Multi-Agent Negotiation Platform\n" +
             "  ✓ Real-time Buyer-Dealer Matching\n" +
-            "  ✓ Automated Price Negotiation Engine\n\n" +
-            "💰 PRICING STRUCTURE:\n" +
+            "  ✓ Dynamic Cycle-Based Negotiation Engine\n\n" + //Change this to Cycle-Based System in case of adding the pause and resume function
+            "PRICING STRUCTURE:\n" +
             "  • Transaction Fee:      RM50 per negotiation\n" +
             "  • Commission:           5% of final sale price\n" +
             "  • Example: RM100k sale = RM5k commission + RM50 fee = RM5,050\n\n" +
-            "🤝 NEGOTIATION RULES:\n" +
+            "BASE NEGOTIATION RULES:\n" +
             "  • Buyer Opening:     70% of maximum budget\n" +
-            "  • Dealer Reserve:    85% of retail price (floor)\n" +
+            "  • Dealer Reserve:    70% of retail price (floor)\n" +
             "  • Max Rounds:        3 rounds per dealer\n" +
             "  • Multi-Dealer:      Buyers try all available dealers\n\n" +
-            "📊 CURRENT METRICS:\n" +
+            "CYCLE-BASED MARKET SYSTEM (SPACE CONTROL):\n" +
+            "  • Maximum Cycles:    50 Market Cycles (Deadline)\n" +
+            "  • Buyer Behavior:    Increases willing offer as time runs out\n" +
+            "  • Dealer Behavior:   Lowers asking price as time runs out\n" +
+            "  • Concession Rate:   Quadratic (Beta = 2.0)\n\n" +
+            "CURRENT METRICS:\n" +
             "  • Total Transactions: See Dashboard tab\n" +
             "  • Platform Revenue:   See Dashboard tab\n" +
             "  • Active Participants: See Dashboard tab\n\n" +
-            "✨ KEY FEATURES:\n" +
+            "KEY FEATURES:\n" +
             "  ✓ Concurrent multi-buyer support\n" +
-            "  ✓ Intelligent dealer fallback strategy\n" +
+//            "  ✓ Intelligent dealer fallback strategy\n" +
             "  ✓ Real-time price tracking & negotiation\n" +
             "  ✓ Automatic deal closure on agreement\n" +
             "  ✓ No-deal detection (budget exceeded)\n" +

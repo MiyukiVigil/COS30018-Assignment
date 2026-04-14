@@ -22,7 +22,7 @@ public class BuyerAgent extends Agent {
     private int currentWillingOffer;
     private String bestDealerName = "";
     private boolean dealFound = false;
-    private final int deadlineCycles = 20;
+    private final int deadlineCycles = 50;
     private final double beta = 2.0;
     private int startCycle = -1;
 
@@ -41,10 +41,6 @@ public class BuyerAgent extends Agent {
         // 1. Search
         addBehaviour(new OneShotBehaviour() {
             public void action() {
-//                ACLMessage req = new ACLMessage(ACLMessage.REQUEST);
-//                req.addReceiver(new AID("broker", AID.ISLOCALNAME));
-//                req.setContent(desiredCar);
-//                send(req);
                 searchBroker();
 
                 //Register with SpaceControl after listing
@@ -127,7 +123,6 @@ public class BuyerAgent extends Agent {
         send(req);
     }
 
-    //TODO: Need further clarification on this, maybe there's a better way to implement this.
     private void startNegotiationWithDealer() {
         if (currentDealerIdx < dealers.size()) {
             String dealer = dealers.get(currentDealerIdx);

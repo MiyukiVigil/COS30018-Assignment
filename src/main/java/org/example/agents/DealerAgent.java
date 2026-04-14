@@ -13,14 +13,14 @@ public class DealerAgent extends Agent {
     private int currentTargetPrice;
     private UILogger logger;
     private int negotiationCount = 0;
-    private final int deadlineCycles = 20;
+    private final int deadlineCycles = 50;
     private final double beta = 2.0;
 
     protected void setup() {
         Object[] args = getArguments();
         car = (String) args[0];
         retailPrice = Integer.parseInt((String) args[1]);
-        minPrice = (int)(retailPrice * 0.85); // Won't go below 85%
+        minPrice = (int)(retailPrice * 0.70); // Change to 70% for future loses
         currentTargetPrice = retailPrice;
         logger = (UILogger) args[2];
 
@@ -70,6 +70,7 @@ public class DealerAgent extends Agent {
                             accept.setContent(String.valueOf(buyerOffer));
                             send(accept);
                             log("DEAL CLOSED: Accepted offer of RM" + buyerOffer);
+                            doDelete();
                         } else {
 //                        int counter = (retailPrice + buyerOffer) / 2;
                             ACLMessage reject = msg.createReply();
