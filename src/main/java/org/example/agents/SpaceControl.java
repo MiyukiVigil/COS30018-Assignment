@@ -29,34 +29,39 @@ public class SpaceControl extends Agent {
 
         //Add behavior to JADE
         addBehaviour(
-            new CyclicBehaviour() {
-                public void action() {
-                    ACLMessage msg = receive();
-                    if (msg != null) {
-                        String ontology = msg.getOntology();
+                new CyclicBehaviour() {
+                    public void action() {
+                        ACLMessage msg = receive();
+                        if (msg != null) {
+                            String ontology = msg.getOntology();
 
-                        if ("REGISTER".equals(ontology)) {
-                            activeAgents.add(msg.getSender());
-                            log("Registered: " + msg.getSender().getLocalName());
+                            if ("REGISTER".equals(ontology)) {
+                                activeAgents.add(msg.getSender());
+                                log("Registered: " + msg.getSender().getLocalName());
 
-                            if (!isPaused && activeAgents.size() == 1 && cycleCount == 0) {
-                                broadcastCycle(1);
+                                if (!isPaused && activeAgents.size() == 1 && cycleCount == 0) {
+                                    broadcastCycle(1);
+                                }
+                            } else if ("DEREGISTER".equals(ontology)) {
+                                activeAgents.remove(msg.getSender());
+                                // ★ CHANGED: keep cycling after an agent deregisters if others are still active
+                                if (!isPaused && !activeAgents.isEmpty()) {
+                                    log("Agent left market. Continuing cycle for remaining agents.");
+                                    broadcastCycle(1);
+                                }
+                            } else if ("ACTION_COMPLETED".equals(ontology)) {
+                                if (!isPaused) {
+                                    log("Market Action Detected! Auto-advancing cycle.");
+                                    broadcastCycle(1);
+                                } else {
+                                    log("Market Action Detected, but system is PAUSED. Standing by for manual input.");
+                                }
                             }
-                        } else if ("DEREGISTER".equals(ontology)) {
-                            activeAgents.remove(msg.getSender());
-                        } else if ("ACTION_COMPLETED".equals(ontology)) {
-                            if (!isPaused) {
-                                log("Market Action Detected! Auto-advancing cycle.");
-                                broadcastCycle(1);
-                            } else {
-                                log("Market Action Detected, but system is PAUSED. Standing by for manual input.");
-                            }
+                        } else {
+                            block();
                         }
-                    } else {
-                        block();
                     }
                 }
-            }
         );
     }
 

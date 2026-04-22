@@ -48,21 +48,21 @@ public class MainUI extends Application {
     private static final String ERROR_RED = "#ef4444";
     private static final String LIGHT_GRAY = "#f9fafb";
     private static final String DARK_TEXT = "#1f2937";
-    
+
     // Popular Car Models Database
     private static final String[] CAR_MODELS = {
-        "Toyota Camry", "Toyota Corolla", "Toyota Fortuner", "Toyota Vios", "Toyota Innova",
-        "Honda Civic", "Honda Accord", "Honda CR-V", "Honda City", "Honda Jazz",
-        "Nissan Almera", "Nissan X-Trail", "Nissan Navara", "Nissan Qashqai",
-        "Mazda 3", "Mazda CX-5", "Mazda CX-9", "Mazda 6",
-        "Hyundai Elantra", "Hyundai Santa Fe", "Hyundai Tucson", "Hyundai i10",
-        "Kia Cerato", "Kia Sportage", "Kia Niro", "Kia Seltos",
-        "BMW X5", "BMW 3 Series", "BMW 5 Series", "BMW X3",
-        "Mercedes C-Class", "Mercedes GLC", "Mercedes E-Class", "Mercedes GLE",
-        "Proton X70", "Proton X90", "Proton Saga", "Proton Persona",
-        "Perodua Myvi", "Perodua Alza", "Perodua Ativa", "Perodua Aruz",
-        "Ford EcoSport", "Ford Ranger", "Ford Everest",
-        "Suzuki Swift", "Suzuki Ertiga", "Suzuki Vitara"
+            "Toyota Camry", "Toyota Corolla", "Toyota Fortuner", "Toyota Vios", "Toyota Innova",
+            "Honda Civic", "Honda Accord", "Honda CR-V", "Honda City", "Honda Jazz",
+            "Nissan Almera", "Nissan X-Trail", "Nissan Navara", "Nissan Qashqai",
+            "Mazda 3", "Mazda CX-5", "Mazda CX-9", "Mazda 6",
+            "Hyundai Elantra", "Hyundai Santa Fe", "Hyundai Tucson", "Hyundai i10",
+            "Kia Cerato", "Kia Sportage", "Kia Niro", "Kia Seltos",
+            "BMW X5", "BMW 3 Series", "BMW 5 Series", "BMW X3",
+            "Mercedes C-Class", "Mercedes GLC", "Mercedes E-Class", "Mercedes GLE",
+            "Proton X70", "Proton X90", "Proton Saga", "Proton Persona",
+            "Perodua Myvi", "Perodua Alza", "Perodua Ativa", "Perodua Aruz",
+            "Ford EcoSport", "Ford Ranger", "Ford Everest",
+            "Suzuki Swift", "Suzuki Ertiga", "Suzuki Vitara"
     };
 
     public static void main(String[] args) {
@@ -82,6 +82,7 @@ public class MainUI extends Application {
             boolean isBuyerReg = msg.contains("Buyer") && msg.contains("registered");
             boolean isDealerReg = msg.contains("Dealer") && msg.contains("listed");
             boolean isRevenue = msg.contains("[BROKER] REVENUE:");
+            boolean isDealConfirmed = msg.contains("[BROKER] DEAL CONFIRMED:"); // ★ CHANGED: detect deal confirmed
             boolean isCycleShift = msg.contains("Cycle Shift:");
             boolean isSetupMsg = msg.contains("BROKER ONLINE") ||
                     msg.contains("Transaction Fee") ||
@@ -93,7 +94,7 @@ public class MainUI extends Application {
                     msg.contains("AGREED") || msg.contains("STATUS:");
 
             Platform.runLater(() -> {
-                if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift || isPriceUpdate || isNegotiationAction || isRevenue) {
+                if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift || isPriceUpdate || isNegotiationAction || isRevenue || isDealConfirmed) { // ★ CHANGED: added isDealConfirmed
                     logArea.appendText(formattedMsg);
                 }
 
@@ -110,8 +111,6 @@ public class MainUI extends Application {
                 }
 
                 if (isRevenue) {
-                    dealsClosed++;
-                    transactionCountLabel.setText(String.valueOf(dealsClosed));
                     try {
                         int rmIndex = msg.indexOf("RM");
                         if (rmIndex != -1) {
@@ -120,6 +119,12 @@ public class MainUI extends Application {
                             revenueLabel.setText(String.format("RM %.2f", totalRevenue));
                         }
                     } catch (Exception e) {  }
+                }
+
+                // ★ CHANGED: update deals closed on DEAL CONFIRMED not REVENUE
+                if (isDealConfirmed) {
+                    dealsClosed++;
+                    transactionCountLabel.setText(String.valueOf(dealsClosed));
                 }
 
                 if (isCycleShift) {
@@ -138,10 +143,10 @@ public class MainUI extends Application {
         cc.createNewAgent("space", "org.example.agents.SpaceControl", new Object[]{logger}).start();
 
         VBox mainContent = createMainContent(logger);
-        
+
         Scene scene = new Scene(mainContent, 1500, 900);
         scene.setFill(Color.web(LIGHT_GRAY));
-        
+
         stage.setScene(scene);
         stage.setTitle("Automated Car Negotiation System - Multi-Agent Platform");
         stage.setOnCloseRequest(e -> System.exit(0));
@@ -174,7 +179,7 @@ public class MainUI extends Application {
     private VBox createMainContent(UILogger logger) {
         TabPane tp = new TabPane();
         tp.setStyle("-fx-font-size: 12; -fx-font-family: 'Segoe UI', Arial;");
-        
+
         Tab dashboardTab = new Tab("Dashboard", createBrokerView());
         dashboardTab.setClosable(false);
         Tab buyerTab = new Tab("Buyer Portal", createBuyerView(logger));
@@ -185,7 +190,7 @@ public class MainUI extends Application {
         analysisTab.setClosable(false);
         Tab logTab = new Tab("Activity Log", createActivityLogView());
         logTab.setClosable(false);
-        
+
         tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, analysisTab, logTab);
         tp.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         return new VBox(tp);
@@ -222,12 +227,12 @@ public class MainUI extends Application {
         VBox quickGuideBox = createQuickGuideBox();
         Label logLabel = new Label("Activity Log");
         logLabel.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
-        
+
 //        logArea.setEditable(false);
 //        logArea.setWrapText(true);
 //        logArea.setPrefRowCount(22);
 //        logArea.setStyle("-fx-font-size: 11; -fx-font-family: 'Courier New'; -fx-control-inner-background: white;");
-        
+
 //        ScrollPane logScroll = new ScrollPane(logArea);
 //        logScroll.setFitToWidth(true);
 //        logScroll.setStyle("-fx-border-color: #e5e7eb; -fx-border-width: 1;");
@@ -254,7 +259,7 @@ public class MainUI extends Application {
         box.getChildren().addAll(headerLabel, statsBox, quickGuideBox, new Separator(), graphLabel, priceChart);
 //        VBox.setVgrow(logScroll, Priority.ALWAYS);
         VBox.setVgrow(priceChart, Priority.ALWAYS);
-        
+
         return box;
     }
 
@@ -284,7 +289,7 @@ public class MainUI extends Application {
 
         Label titleLabel = new Label("Quick Setup Guide");
         titleLabel.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
-        
+
         dealerStatusLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #666; -fx-wrap-text: true;");
         updateDealerStatus();
 
@@ -388,17 +393,17 @@ public class MainUI extends Application {
             String name = buyerName.getText().trim();
             String car = carModel.getValue() != null ? carModel.getValue() : "";
             String budgetStr = budget.getText().trim();
-            
+
             if (name.isEmpty() || car.isEmpty() || budgetStr.isEmpty()) {
                 showAlert("⚠️ All fields are required!", Alert.AlertType.WARNING);
                 return;
             }
-            
+
             if (dealerCount == 0) {
                 showAlert("❌ No dealers registered!\n\nPlease register at least one dealer in the Dealer Portal first.", Alert.AlertType.ERROR);
                 return;
             }
-            
+
             try {
                 // Validate budget is numeric
                 double budgetAmount = Double.parseDouble(budgetStr);
@@ -406,7 +411,7 @@ public class MainUI extends Application {
                     showAlert("❌ Budget must be greater than 0", Alert.AlertType.WARNING);
                     return;
                 }
-                
+
                 cc.createNewAgent(name, "org.example.agents.BuyerAgent",
                         new Object[]{car, budgetStr, logger}).start();
                 logger.log("Buyer '" + name + "' registered - searching for " + car);
@@ -424,12 +429,12 @@ public class MainUI extends Application {
 
         HBox btnBox = new HBox(addBuyerBtn);
         btnBox.setPadding(new Insets(10, 0, 0, 0));
-        
+
         formSection.getChildren().addAll(formTitle, form, btnBox);
 
         box.getChildren().addAll(headerLabel, warningBanner, formSection);
         VBox.setVgrow(formSection, Priority.SOMETIMES);
-        
+
         return box;
     }
 
@@ -462,6 +467,7 @@ public class MainUI extends Application {
         TextField dealerName = createStyledTextField("e.g., GreenCars Sdn Bhd");
         ComboBox<String> carModel = createStyledCarComboBox();
         TextField retailPrice = createStyledTextField("e.g., 150000");
+        TextField stockField = createStyledTextField("e.g., 3");
 
         Label dealerLabel = new Label("Dealer Name:");
         dealerLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + ";");
@@ -469,6 +475,8 @@ public class MainUI extends Application {
         carLbl.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + ";");
         Label priceLabel = new Label("Retail Price (RM):");
         priceLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + ";");
+        Label stockLabel = new Label("Stock Quantity:");
+        stockLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + ";");
 
         form.add(dealerLabel, 0, 0);
         form.add(dealerName, 1, 0);
@@ -476,6 +484,8 @@ public class MainUI extends Application {
         form.add(carModel, 1, 1);
         form.add(priceLabel, 0, 2);
         form.add(retailPrice, 1, 2);
+        form.add(stockLabel, 0, 3);
+        form.add(stockField, 1, 3);
 
         Button addDealerBtn = createStyledButton("📋 List Car", WARNING_ORANGE);
         addDealerBtn.setPrefWidth(280);
@@ -484,12 +494,13 @@ public class MainUI extends Application {
             String name = dealerName.getText().trim();
             String car = carModel.getValue() != null ? carModel.getValue() : "";
             String price = retailPrice.getText().trim();
-            
-            if (name.isEmpty() || car.isEmpty() || price.isEmpty()) {
+            String stock = stockField.getText().trim();
+
+            if (name.isEmpty() || car.isEmpty() || price.isEmpty() || stock.isEmpty()){
                 showAlert("⚠️ All fields are required!", Alert.AlertType.WARNING);
                 return;
             }
-            
+
             try {
                 // Validate price is numeric
                 double priceAmount = Double.parseDouble(price);
@@ -497,16 +508,22 @@ public class MainUI extends Application {
                     showAlert("❌ Price must be greater than 0", Alert.AlertType.WARNING);
                     return;
                 }
-                
+                int stockAmount = Integer.parseInt(stock);
+                if (stockAmount <= 0) {
+                    showAlert("❌ Stock must be at least 1", Alert.AlertType.WARNING);
+                    return;
+                }
+
                 cc.createNewAgent(name, "org.example.agents.DealerAgent",
-                        new Object[]{car, price, logger}).start();
-                logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price);
+                        new Object[]{car, price, stock, logger}).start();
+                logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
                 dealerName.clear();
                 carModel.setValue(null);
                 retailPrice.clear();
-                showAlert("✅ Dealer " + name + " registered!", Alert.AlertType.INFORMATION);
+                stockField.clear();
+                showAlert("✅ Dealer " + name + " registered with " + stock + " unit(s)!", Alert.AlertType.INFORMATION);;
             } catch (NumberFormatException ex) {
-                showAlert("❌ Price must be a valid number", Alert.AlertType.ERROR);
+                showAlert("❌ Price and Stock must be valid numbers", Alert.AlertType.ERROR);
             } catch (Exception ex) {
                 logger.log("❌ Error creating dealer: " + ex.getMessage());
                 showAlert("❌ Error: " + ex.getMessage(), Alert.AlertType.ERROR);
@@ -515,12 +532,12 @@ public class MainUI extends Application {
 
         HBox btnBox = new HBox(addDealerBtn);
         btnBox.setPadding(new Insets(10, 0, 0, 0));
-        
+
         formSection.getChildren().addAll(formTitle, form, btnBox);
 
         box.getChildren().addAll(headerLabel, infoBanner, formSection);
         VBox.setVgrow(formSection, Priority.SOMETIMES);
-        
+
         return box;
     }
 
@@ -537,38 +554,38 @@ public class MainUI extends Application {
         analysisArea.setWrapText(true);
         analysisArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white;");
         analysisArea.setText(
-            "╔════════════════════════════════════════════════════════════╗\n" +
-            "║                                      MARKET ANALYTICS DASHBOARD                                        ║\n" + //Modify the space to organise the text
-            "╚════════════════════════════════════════════════════════════╝\n\n" +
-            "SYSTEM OVERVIEW:\n" +
-            "  ✓ Multi-Agent Negotiation Platform\n" +
-            "  ✓ Real-time Buyer-Dealer Matching\n" +
-            "  ✓ Dynamic Cycle-Based Negotiation Engine\n\n" + //Change this to Cycle-Based System in case of adding the pause and resume function
-            "PRICING STRUCTURE:\n" +
-            "  • Transaction Fee:      RM50 per negotiation\n" +
-            "  • Commission:           5% of final sale price\n" +
-            "  • Example: RM100k sale = RM5k commission + RM50 fee = RM5,050\n\n" +
-            "BASE NEGOTIATION RULES:\n" +
-            "  • Buyer Opening:     70% of maximum budget\n" +
-            "  • Dealer Reserve:    70% of retail price (floor)\n" +
-            "  • Max Rounds:        3 rounds per dealer\n" +
-            "  • Multi-Dealer:      Buyers try all available dealers\n\n" +
-            "CYCLE-BASED MARKET SYSTEM (SPACE CONTROL):\n" +
-            "  • Maximum Cycles:    50 Market Cycles (Deadline)\n" +
-            "  • Buyer Behavior:    Increases willing offer as time runs out\n" +
-            "  • Dealer Behavior:   Lowers asking price as time runs out\n" +
-            "  • Concession Rate:   Quadratic (Beta = 2.0)\n\n" +
-            "CURRENT METRICS:\n" +
-            "  • Total Transactions: See Dashboard tab\n" +
-            "  • Platform Revenue:   See Dashboard tab\n" +
-            "  • Active Participants: See Dashboard tab\n\n" +
-            "KEY FEATURES:\n" +
-            "  ✓ Concurrent multi-buyer support\n" +
+                "╔════════════════════════════════════════════════════════════╗\n" +
+                        "║                                      MARKET ANALYTICS DASHBOARD                                        ║\n" + //Modify the space to organise the text
+                        "╚════════════════════════════════════════════════════════════╝\n\n" +
+                        "SYSTEM OVERVIEW:\n" +
+                        "  ✓ Multi-Agent Negotiation Platform\n" +
+                        "  ✓ Real-time Buyer-Dealer Matching\n" +
+                        "  ✓ Dynamic Cycle-Based Negotiation Engine\n\n" + //Change this to Cycle-Based System in case of adding the pause and resume function
+                        "PRICING STRUCTURE:\n" +
+                        "  • Transaction Fee:      RM50 per negotiation\n" +
+                        "  • Commission:           5% of final sale price\n" +
+                        "  • Example: RM100k sale = RM5k commission + RM50 fee = RM5,050\n\n" +
+                        "BASE NEGOTIATION RULES:\n" +
+                        "  • Buyer Opening:     70% of maximum budget\n" +
+                        "  • Dealer Reserve:    70% of retail price (floor)\n" +
+                        "  • Max Rounds:        3 rounds per dealer\n" +
+                        "  • Multi-Dealer:      Buyers try all available dealers\n\n" +
+                        "CYCLE-BASED MARKET SYSTEM (SPACE CONTROL):\n" +
+                        "  • Maximum Cycles:    50 Market Cycles (Deadline)\n" +
+                        "  • Buyer Behavior:    Increases willing offer as time runs out\n" +
+                        "  • Dealer Behavior:   Lowers asking price as time runs out\n" +
+                        "  • Concession Rate:   Quadratic (Beta = 2.0)\n\n" +
+                        "CURRENT METRICS:\n" +
+                        "  • Total Transactions: See Dashboard tab\n" +
+                        "  • Platform Revenue:   See Dashboard tab\n" +
+                        "  • Active Participants: See Dashboard tab\n\n" +
+                        "KEY FEATURES:\n" +
+                        "  ✓ Concurrent multi-buyer support\n" +
 //            "  ✓ Intelligent dealer fallback strategy\n" +
-            "  ✓ Real-time price tracking & negotiation\n" +
-            "  ✓ Automatic deal closure on agreement\n" +
-            "  ✓ No-deal detection (budget exceeded)\n" +
-            "╚════════════════════════════════════════════════════════════╝"
+                        "  ✓ Real-time price tracking & negotiation\n" +
+                        "  ✓ Automatic deal closure on agreement\n" +
+                        "  ✓ No-deal detection (budget exceeded)\n" +
+                        "╚════════════════════════════════════════════════════════════╝"
         );
 
         ScrollPane scrollPane = new ScrollPane(analysisArea);
@@ -577,7 +594,7 @@ public class MainUI extends Application {
 
         box.getChildren().addAll(headerLabel, scrollPane);
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
-        
+
         return box;
     }
 
@@ -606,7 +623,7 @@ public class MainUI extends Application {
         HBox controlBox = new HBox(12);
         controlBox.setPadding(new Insets(15));
         controlBox.setStyle("-fx-background-color: white; -fx-border-radius: 8; -fx-border-color: #e5e7eb; -fx-border-width: 1;");
-        
+
         Button copyBtn = createStyledButton("📋 Copy Log", ACCENT_BLUE);
         copyBtn.setPrefWidth(120);
         copyBtn.setOnAction(e -> {
@@ -616,19 +633,19 @@ public class MainUI extends Application {
             clipboard.setContent(content);
             showAlert("Log copied to clipboard!", Alert.AlertType.INFORMATION);
         });
-        
+
         Button clearBtn = createStyledButton("🗑️ Clear Log", ERROR_RED);
         clearBtn.setPrefWidth(120);
         clearBtn.setOnAction(e -> {
             logArea.clear();
             fullLogArea.clear();
         });
-        
+
         controlBox.getChildren().addAll(copyBtn, clearBtn);
 
         box.getChildren().addAll(headerLabel, logScroll, controlBox);
         VBox.setVgrow(logScroll, Priority.ALWAYS);
-        
+
         return box;
     }
 
@@ -636,9 +653,9 @@ public class MainUI extends Application {
         TextField tf = new TextField();
         tf.setPromptText(prompt);
         tf.setStyle(
-            "-fx-font-size: 12; -fx-padding: 12; " +
-            "-fx-border-color: #d1d5db; -fx-border-radius: 6; -fx-border-width: 1; " +
-            "-fx-control-inner-background: white;"
+                "-fx-font-size: 12; -fx-padding: 12; " +
+                        "-fx-border-color: #d1d5db; -fx-border-radius: 6; -fx-border-width: 1; " +
+                        "-fx-control-inner-background: white;"
         );
         return tf;
     }
@@ -649,24 +666,24 @@ public class MainUI extends Application {
         comboBox.setEditable(true);
         comboBox.setPrefWidth(300);
         comboBox.setStyle(
-            "-fx-font-size: 12; -fx-padding: 12; " +
-            "-fx-border-color: #d1d5db; -fx-border-radius: 6; -fx-border-width: 1; " +
-            "-fx-control-inner-background: white;"
+                "-fx-font-size: 12; -fx-padding: 12; " +
+                        "-fx-border-color: #d1d5db; -fx-border-radius: 6; -fx-border-width: 1; " +
+                        "-fx-control-inner-background: white;"
         );
         comboBox.setPromptText("Select or type car model...");
-        
+
         return comboBox;
     }
 
     private Button createStyledButton(String text, String color) {
         Button btn = new Button(text);
         btn.setStyle(
-            "-fx-font-size: 13; -fx-font-weight: 500; -fx-padding: 13 28 13 28; " +
-            "-fx-background-color: " + color + "; " +
-            "-fx-text-fill: white; " +
-            "-fx-border-radius: 6; " +
-            "-fx-cursor: hand; " +
-            "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.15), 4, 0, 0, 1);"
+                "-fx-font-size: 13; -fx-font-weight: 500; -fx-padding: 13 28 13 28; " +
+                        "-fx-background-color: " + color + "; " +
+                        "-fx-text-fill: white; " +
+                        "-fx-border-radius: 6; " +
+                        "-fx-cursor: hand; " +
+                        "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.15), 4, 0, 0, 1);"
         );
         btn.setOnMouseEntered(e -> btn.setOpacity(0.88));
         btn.setOnMouseExited(e -> btn.setOpacity(1.0));

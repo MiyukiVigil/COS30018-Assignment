@@ -104,7 +104,7 @@ public class BuyerAgent extends Agent {
                     } else if (msg.getPerformative() == ACLMessage.ACCEPT_PROPOSAL) {
                         int finalPrice = Integer.parseInt(msg.getContent());
                         log("SUCCESS! Purchased " + desiredCar + " for RM" + finalPrice + " from " + msg.getSender().getLocalName());
-                        notifyBroker(String.valueOf(finalPrice));
+                        notifyBroker(String.valueOf(finalPrice), msg.getSender().getLocalName());
                         dealFound = true;
 
                         triggerMarketAction();
@@ -132,7 +132,7 @@ public class BuyerAgent extends Agent {
 //            start.setContent(String.valueOf((int)(maxBudget * 0.7))); // Start at 70% of budget
             start.setContent(String.valueOf(currentWillingOffer));
             send(start);
-            log("NEGOTIATION: Starting with " + dealer + " @ RM" + (int)(maxBudget * 0.7));
+            log("NEGOTIATION: Starting with " + dealer + " @ RM" + currentWillingOffer);
         } else {
             if (!dealFound && bestDealerName.isEmpty()) {
                 log("STATUS: All negotiations exhausted. No deal reached.");
@@ -227,10 +227,10 @@ public class BuyerAgent extends Agent {
 //        }
 //    }
 
-    private void notifyBroker(String finalPrice) {
+    private void notifyBroker(String finalPrice, String dealerName) {
         ACLMessage confirm = new ACLMessage(ACLMessage.CONFIRM);
         confirm.addReceiver(new AID("broker", AID.ISLOCALNAME));
-        confirm.setContent(finalPrice);
+        confirm.setContent(finalPrice + ";" + dealerName + ";" + desiredCar);
         send(confirm);
     }
 
