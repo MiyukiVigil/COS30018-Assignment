@@ -15,14 +15,16 @@ public class DealerAgent extends Agent {
     private int negotiationCount = 0;
     private final int deadlineCycles = 50;
     private final double beta = 2.0;
+    private int stockCount;
 
     protected void setup() {
         Object[] args = getArguments();
         car = (String) args[0];
         retailPrice = Integer.parseInt((String) args[1]);
-        minPrice = (int)(retailPrice * 0.70); // Change to 70% for future loses
+        stockCount = Integer.parseInt((String) args[2]); // read stock from args
+        logger = (UILogger) args[3];                     // ★ logger is at index 3
+        minPrice = (int)(retailPrice * 0.70);
         currentTargetPrice = retailPrice;
-        logger = (UILogger) args[2];
 
         log("STATUS: Registered with retail price RM" + retailPrice + ", reserve: RM" + minPrice);
 
@@ -31,9 +33,9 @@ public class DealerAgent extends Agent {
             public void action() {
                 ACLMessage inform = new ACLMessage(ACLMessage.INFORM);
                 inform.addReceiver(new AID("broker", AID.ISLOCALNAME));
-                inform.setContent(car + ";" + retailPrice);
+                inform.setContent(car + ";" + retailPrice + ";" + stockCount);
                 send(inform);
-                log("STATUS: Listed " + car + " on marketplace");
+                log("STATUS: Listed " + car + " on marketplace | Stock: " + stockCount);
 
                 //Register with SpaceControl after listing
                 ACLMessage register = new ACLMessage(ACLMessage.INFORM);
@@ -65,12 +67,16 @@ public class DealerAgent extends Agent {
                         log("OFFER " + negotiationCount + ": Buyer offered RM" + buyerOffer);
 
                         if (buyerOffer >= currentTargetPrice) {
+                            stockCount--;
                             ACLMessage accept = msg.createReply();
                             accept.setPerformative(ACLMessage.ACCEPT_PROPOSAL);
                             accept.setContent(String.valueOf(buyerOffer));
                             send(accept);
-                            log("DEAL CLOSED: Accepted offer of RM" + buyerOffer);
-                            doDelete();
+                            log("DEAL CLOSED: Accepted offer of RM" + buyerOffer + " | Stock remaining: " + stockCount);
+                            if (stockCount <= 0) {
+                                log("STATUS: Out of stock. Closing.");
+                                doDelete(); // only delete when stock runs out
+                            }
                         } else {
 //                        int counter = (retailPrice + buyerOffer) / 2;
                             ACLMessage reject = msg.createReply();

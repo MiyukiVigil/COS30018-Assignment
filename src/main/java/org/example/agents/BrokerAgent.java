@@ -17,11 +17,12 @@ public class BrokerAgent extends Agent {
 
     public static class CarListing {
         public String dealer, model;
-        public int price;
-        public CarListing(String d, String m, int p) {
+        public int price, stock;
+        public CarListing(String d, String m, int p, int s) {
             this.dealer = d;
             this.model = m;
             this.price = p;
+            this.stock = s;
         }
     }
 
@@ -48,15 +49,22 @@ public class BrokerAgent extends Agent {
                 ACLMessage msg = receive();
                 if (msg != null) {
                     if (msg.getPerformative() == ACLMessage.INFORM) {
-                        // Dealer Registration
-                        String[] data = msg.getContent().split(";");
-                        inventory.add(new CarListing(msg.getSender().getLocalName(), data[0], Integer.parseInt(data[1])));
-                        log("LISTING: " + data[0] + " @ RM" + data[1] + " (Seller: " + msg.getSender().getLocalName() + ")");
+
+                        // Ignore REGISTER/DEREGISTER messages that leak from other agents
+                        String ontology = msg.getOntology();
+                        if (ontology == null || ontology.isEmpty()) {
+                            String[] data = msg.getContent().split(";");
+                            int stock = data.length > 2 ? Integer.parseInt(data[2]) : 1;
+                            inventory.add(new CarListing(msg.getSender().getLocalName(), data[0], Integer.parseInt(data[1]), stock));
+                            log("LISTING: " + data[0] + " @ RM" + data[1] + " | Stock: " + stock + " (Seller: " + msg.getSender().getLocalName() + ")");
+                        }
+
                     } else if (msg.getPerformative() == ACLMessage.REQUEST) {
                         // Buyer Search
                         handleSearch(msg);
                     } else if (msg.getPerformative() == ACLMessage.CONFIRM) {
                         // Financial Tracking
+                        log("CONFIRM received from: " + msg.getSender().getLocalName() + " | Content: " + msg.getContent());
                         handleTransaction(msg);
                     }
                 } else block();
@@ -88,21 +96,25 @@ public class BrokerAgent extends Agent {
     }
 
     private void handleTransaction(ACLMessage msg) {
-        String[] parts = msg.getContent().split(";");
-        double salePrice = Double.parseDouble(parts[0]);
-        String dealerName = parts.length > 1 ? parts[1] : "Unknown";
-        String carModel   = parts.length > 2 ? parts[2] : "Unknown";
+        try {
+            String[] parts = msg.getContent().split(";");
+            double salePrice = Double.parseDouble(parts[0]);
+            String dealerName = parts.length > 1 ? parts[1] : "Unknown";
+            String carModel   = parts.length > 2 ? parts[2] : "Unknown";
 
-        double commission = salePrice * 0.05;
-        double totalEarned = commission + 50;
-        totalRevenue += totalEarned;
+            double commission = salePrice * 0.05;
+            double totalEarned = commission + 50;
+            totalRevenue += totalEarned;
 
-        String buyerName = msg.getSender().getLocalName();
-        transactions.add(new Transaction(buyerName, dealerName, carModel, (int)salePrice));
+            String buyerName = msg.getSender().getLocalName();
+            transactions.add(new Transaction(buyerName, dealerName, carModel, (int)salePrice));
 
-        log("DEAL CONFIRMED: Buyer=" + buyerName + " | Dealer=" + dealerName + " | Car=" + carModel + " | Sale=RM" + (int)salePrice + " | Commission=RM" + (int)commission + " | Fee=RM50");
-        log("REVENUE: RM" + (int)totalEarned + " earned | Total: RM" + (int)totalRevenue);
-        log("TOTAL TRANSACTIONS RECORDED: " + transactions.size());
+            log("DEAL CONFIRMED: Buyer=" + buyerName + " | Dealer=" + dealerName + " | Car=" + carModel + " | Sale=RM" + (int)salePrice + " | Commission=RM" + (int)commission + " | Fee=RM50");
+            log("REVENUE: RM" + (int)totalEarned + " earned | Total: RM" + (int)totalRevenue); // ★ CHANGED: kept for revenue tracking
+            log("TOTAL TRANSACTIONS RECORDED: " + transactions.size());
+        } catch (Exception e) {
+            log("ERROR in handleTransaction: " + e.getMessage() + " | Raw content: " + msg.getContent()); // ★ CHANGED: catch errors silently before
+        }
     }
 
     private void log(String m) {
