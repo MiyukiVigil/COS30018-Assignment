@@ -1,24 +1,36 @@
 package org.example;
 
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
+
+import jade.core.Profile;
+import jade.core.ProfileImpl;
+import jade.core.Runtime;
+import jade.wrapper.ContainerController;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
-import javafx.stage.Stage;
-import jade.core.Runtime;
-import jade.core.Profile;
-import jade.core.ProfileImpl;
-import jade.wrapper.ContainerController;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
-import java.util.HashMap;
-import java.util.Map;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.Separator;
+import javafx.scene.control.Tab;
+import javafx.scene.control.TabPane;
+import javafx.scene.control.TextArea;
+import javafx.scene.control.TextField;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.stage.Stage;
 
 public class MainUI extends Application {
     private TextArea logArea = new TextArea();
@@ -588,12 +600,19 @@ public class MainUI extends Application {
                         "╚════════════════════════════════════════════════════════════╝"
         );
 
+        /*
         ScrollPane scrollPane = new ScrollPane(analysisArea);
         scrollPane.setFitToWidth(true);
         scrollPane.setStyle("-fx-border-color: #e5e7eb; -fx-border-width: 1;");
 
         box.getChildren().addAll(headerLabel, scrollPane);
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
+        */
+        
+        analysisArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-border-radius: 4;");
+        box.getChildren().addAll(headerLabel, analysisArea);
+        VBox.setVgrow(analysisArea, Priority.ALWAYS);
+        // --------------------------------------------------
 
         return box;
     }
@@ -616,9 +635,16 @@ public class MainUI extends Application {
             fullLogArea.setScrollTop(Double.MAX_VALUE);
         });
 
+        /*
         ScrollPane logScroll = new ScrollPane(fullLogArea);
         logScroll.setFitToWidth(true);
         logScroll.setStyle("-fx-border-color: #e5e7eb; -fx-border-width: 1;");
+        */
+        
+        // Remove the redundant ScrollPane (TextArea is already scrollable)
+        // and allow the TextArea to expand to fill available height.
+        fullLogArea.setStyle("-fx-font-size: 11; -fx-font-family: 'Courier New'; -fx-control-inner-background: white; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-border-radius: 4;");
+        // ----------------------------------------------------
 
         HBox controlBox = new HBox(12);
         controlBox.setPadding(new Insets(15));
@@ -642,9 +668,14 @@ public class MainUI extends Application {
         });
 
         controlBox.getChildren().addAll(copyBtn, clearBtn);
-
+        
+        /*
         box.getChildren().addAll(headerLabel, logScroll, controlBox);
         VBox.setVgrow(logScroll, Priority.ALWAYS);
+        */
+        box.getChildren().addAll(headerLabel, fullLogArea, controlBox);
+        VBox.setVgrow(fullLogArea, Priority.ALWAYS);
+        // -------------------------
 
         return box;
     }
