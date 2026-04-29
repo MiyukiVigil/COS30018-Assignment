@@ -296,20 +296,20 @@ sequenceDiagram
     participant U as BuyerAgent
     participant S as SpaceControl
 
-    D->>B: INFORM car;price;stock;reserve
+    D->>B: INFORM listing payload
     D->>S: INFORM REGISTER
     U->>U: Wait for START_NEGOTIATION
-    U->>B: REQUEST desiredCar
+    U->>B: REQUEST desired car
     U->>S: INFORM REGISTER
-    B->>U: PROPOSE dealer:price:reserve,...
-    U->>D: PROPOSE buyerOffer
-    D-->>U: REJECT_PROPOSAL counterPrice
+    B->>U: PROPOSE matching dealers
+    U->>D: PROPOSE buyer offer
+    D-->>U: REJECT_PROPOSAL counter price
     U->>S: INFORM ACTION_COMPLETED
     S-->>U: PROPAGATE CYCLE_UPDATE
     S-->>D: PROPAGATE CYCLE_UPDATE
-    U->>D: PROPOSE revisedOffer
-    D-->>U: ACCEPT_PROPOSAL finalPrice
-    U->>B: CONFIRM finalPrice;dealer;car;rounds
+    U->>D: PROPOSE revised offer
+    D-->>U: ACCEPT_PROPOSAL final price
+    U->>B: CONFIRM deal details
     U->>S: INFORM DEREGISTER
 ```
 
@@ -320,11 +320,11 @@ sequenceDiagram
     participant B as BrokerAgent
     participant U as BuyerAgent
 
-    U->>B: REQUEST desiredCar
+    U->>B: REQUEST desired car
     B-->>U: PROPOSE NONE
-    U->>B: REQUEST desiredCar retry
+    U->>B: REQUEST desired car retry
     B-->>U: PROPOSE NONE
-    U->>B: CONFIRM NO_DEAL;NO_MATCHING_CAR;car;budget
+    U->>B: CONFIRM no deal - no matching car
 ```
 
 ### Budget Too Low
@@ -334,10 +334,10 @@ sequenceDiagram
     participant B as BrokerAgent
     participant U as BuyerAgent
 
-    U->>B: REQUEST desiredCar
-    B-->>U: PROPOSE dealer:price:reserve,...
+    U->>B: REQUEST desired car
+    B-->>U: PROPOSE dealer options
     U->>U: Check reserve prices against maxBudget
-    U->>B: CONFIRM NO_DEAL;BUDGET_TOO_LOW;car;budget
+    U->>B: CONFIRM no deal - budget too low
 ```
 
 ## Negotiation Model
