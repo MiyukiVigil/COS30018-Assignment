@@ -77,6 +77,9 @@ public class MainUI extends Application {
     private Label negotiationControlStatusLabel = new Label("No waiting buyers");
     private List<String> waitingBuyerAgents = new ArrayList<>();
     private List<String> buyerAgents = new ArrayList<>();
+    private List<String> dealerAgents = new ArrayList<>();
+    private List<String> failedDeals = new ArrayList<>();
+    private TextArea failuresArea = new TextArea();
     private final AtomicLong commandAgentCounter = new AtomicLong();
     private final AtomicLong demoScenarioCounter = new AtomicLong();
     private static final Pattern RM_AMOUNT_PATTERN = Pattern.compile("RM\\s*(\\d+)");
@@ -137,7 +140,7 @@ public class MainUI extends Application {
             boolean isSetupMsg = msg.contains("BROKER ONLINE") ||
                     msg.contains("Transaction Fee") ||
                     msg.contains("Initializing Space Control");
-            boolean isPriceUpdate = msg.contains("RM") && (
+                boolean isPriceUpdate = msg.contains("RM") && (
                     msg.contains("has set buying price") ||
                     msg.contains("has set vehicle") ||
                     msg.contains("Buyer offered") ||
@@ -146,6 +149,7 @@ public class MainUI extends Application {
                     msg.contains("DEAL CLOSED") ||
                     msg.contains("SUCCESS! Purchased")
             );
+                boolean isNoDeal = msg.contains("NO_DEAL") || msg.contains("NO DEAL RECORDED") || (msg.contains("[BROKER] CONFIRM received") && msg.contains("NO_DEAL"));
             boolean isNegotiationAction = msg.contains("DEAL") || msg.contains("SUCCESS") ||
                     msg.contains("COUNTER") || msg.contains("OFFER") ||
                     msg.contains("AGREED") || msg.contains("STATUS:");
@@ -193,6 +197,11 @@ public class MainUI extends Application {
                 if (isPriceUpdate) {
                     updatePriceChart(msg);
                 }
+
+                if (isNoDeal) {
+                    failedDeals.add(formattedMsg);
+                    failuresArea.appendText(formattedMsg);
+                }
             });
         };
         appLogger = logger;
@@ -214,15 +223,27 @@ public class MainUI extends Application {
 
     private void updatePriceChart(String msg) {
         try {
-            String agentName = msg.substring(0, msg.indexOf(":")).trim();
+            // Extract agent name robustly: look for leading token before ':'
+            int colon = msg.indexOf(":");
+            if (colon <= 0) return;
+            String agentName = msg.substring(0, colon).trim();
+
+            // Only plot known buyer/dealer agents to avoid noise from broker/UI messages
+            boolean knownAgent = false;
+            synchronized (dealerAgents) {
+                if (dealerAgents.contains(agentName)) knownAgent = true;
+            }
+            synchronized (buyerAgents) {
+                if (buyerAgents.contains(agentName)) knownAgent = true;
+            }
+            if (!knownAgent) return;
+
             Matcher matcher = RM_AMOUNT_PATTERN.matcher(msg);
-            double amount = -1;
+            Double amount = null;
             while (matcher.find()) {
                 amount = Double.parseDouble(matcher.group(1));
             }
-            if (amount < 0) {
-                return;
-            }
+            if (amount == null) return;
 
             XYChart.Series<Number, Number> series = seriesMap.computeIfAbsent(agentName, k -> {
                 XYChart.Series<Number, Number> s = new XYChart.Series<>();
@@ -232,7 +253,6 @@ public class MainUI extends Application {
             });
 
             series.getData().add(new XYChart.Data<>(currentCycle, amount));
-
             if (series.getData().size() > 50) {
                 series.getData().remove(0);
             }
@@ -275,10 +295,12 @@ public class MainUI extends Application {
         dealerTab.setClosable(false);
         Tab analysisTab = new Tab("Market Analysis", createMarketAnalysisView());
         analysisTab.setClosable(false);
+        Tab failuresTab = new Tab("Failures", createFailuresView());
+        failuresTab.setClosable(false);
         Tab logTab = new Tab("Activity Log", createActivityLogView());
         logTab.setClosable(false);
 
-        tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, analysisTab, logTab);
+        tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, analysisTab, failuresTab, logTab);
         tp.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         VBox root = new VBox(0);
@@ -361,9 +383,34 @@ public class MainUI extends Application {
 
     private void launchSniffer(UILogger logger) {
         try {
+            // First try a wildcard pattern (captures demo agents like DemoBuyer*, DemoAuto*)
+            String wildcardTargets = "broker;space;DemoBuyer*;DemoAuto*;BudgetCars*;FamilyDrive*;TruckHub*";
+            try {
+                cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
+                        new Object[]{wildcardTargets}).start();
+                logger.log("STATUS: JADE Sniffer launched with wildcards: " + wildcardTargets);
+                return;
+            } catch (Exception ex) {
+                // Wildcard launch sometimes fails with AMS errors when agents terminate quickly.
+                logger.log("STATUS: Wildcard sniffer failed, falling back to explicit agent list: " + ex.getMessage());
+            }
+
+            // Fallback: Build a focused sniffer list from currently-known agents to avoid AMS errors
+            StringBuilder target = new StringBuilder();
+            target.append("broker;space");
+            synchronized (dealerAgents) {
+                for (String d : dealerAgents) {
+                    target.append(";").append(d);
+                }
+            }
+            synchronized (buyerAgents) {
+                for (String b : buyerAgents) {
+                    target.append(";").append(b);
+                }
+            }
             cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
-                    new Object[]{"broker;space;DemoBuyer*;DemoAuto*;BudgetCars*"}).start();
-            logger.log("STATUS: JADE Sniffer Agent launched for broker, space, and demo agents.");
+                    new Object[]{target.toString()}).start();
+            logger.log("STATUS: JADE Sniffer Agent launched for broker, space, and specified agents.");
         } catch (Exception e) {
             logger.log("STATUS: Sniffer not launched: " + e.getMessage());
         }
@@ -591,6 +638,8 @@ public class MainUI extends Application {
                 waitingBuyerAgents.add(name);
                 updateNegotiationControlStatus();
                 logger.log("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budgetStr);
+                // Try to refresh sniffer to include the newly added buyer
+                launchSniffer(logger);
                 buyerName.clear();
                 carModel.setValue(null);
                 budget.clear();
@@ -806,6 +855,9 @@ public class MainUI extends Application {
         cc.createNewAgent(name, "org.example.agents.DealerAgent",
                 new Object[]{car, price, stock, appLogger, config}).start();
         loggerLog("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
+        dealerAgents.add(name);
+        // Refresh sniffer to include newly created demo dealer
+        launchSniffer(appLogger);
     }
 
     private void createDemoBuyer(String name, String car, String budget, NegotiationConfig config) throws Exception {
@@ -814,6 +866,8 @@ public class MainUI extends Application {
         buyerAgents.add(name);
         waitingBuyerAgents.add(name);
         loggerLog("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budget);
+        // Refresh sniffer to include newly created demo buyer
+        launchSniffer(appLogger);
     }
 
     private VBox createDealerView(UILogger logger) {
@@ -895,6 +949,12 @@ public class MainUI extends Application {
                 cc.createNewAgent(name, "org.example.agents.DealerAgent",
                         new Object[]{car, price, stock, logger, buildNegotiationConfig()}).start();
                 logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
+                dealerAgents.add(name);
+                // Try to refresh sniffer to include the newly added dealer
+                launchSniffer(logger);
+                dealerCount++;
+                dealerCountLabel.setText(String.valueOf(dealerCount));
+                updateDealerStatus();
                 dealerName.clear();
                 carModel.setValue(null);
                 retailPrice.clear();
@@ -1152,6 +1212,45 @@ public class MainUI extends Application {
         VBox.setVgrow(fullLogArea, Priority.ALWAYS);
         // -------------------------
 
+        return box;
+    }
+
+    private VBox createFailuresView() {
+        VBox box = new VBox(18);
+        box.setPadding(new Insets(25));
+        box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
+
+        Label headerLabel = new Label("Failed Negotiations");
+        headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+
+        failuresArea.setEditable(false);
+        failuresArea.setWrapText(true);
+        failuresArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-border-radius: 4;");
+        failuresArea.setPrefRowCount(15);
+
+        HBox controlBox = new HBox(12);
+        controlBox.setPadding(new Insets(10));
+        controlBox.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
+
+        Button copyBtn = createStyledButton("Copy Failures", ACCENT_BLUE);
+        copyBtn.setOnAction(e -> {
+            var clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+            var content = new javafx.scene.input.ClipboardContent();
+            content.putString(failuresArea.getText());
+            clipboard.setContent(content);
+            showAlert("Failures copied to clipboard!", Alert.AlertType.INFORMATION);
+        });
+
+        Button clearBtn = createStyledButton("Clear Failures", ERROR_RED);
+        clearBtn.setOnAction(e -> {
+            failuresArea.clear();
+            failedDeals.clear();
+        });
+
+        controlBox.getChildren().addAll(copyBtn, clearBtn);
+
+        box.getChildren().addAll(headerLabel, failuresArea, controlBox);
+        VBox.setVgrow(failuresArea, Priority.ALWAYS);
         return box;
     }
 

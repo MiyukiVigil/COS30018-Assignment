@@ -210,6 +210,19 @@ public class BuyerAgent extends Agent {
 //            start.setContent(String.valueOf((int)(maxBudget * 0.7))); // Start at 70% of budget
             start.setContent(String.valueOf(currentWillingOffer));
             send(start);
+            // If dealer doesn't respond within a short timeout, move to next dealer
+            final DealerOption pending = dealer;
+            addBehaviour(new WakerBehaviour(this, 1500) {
+                protected void onWake() {
+                    if (dealFound) return;
+                    if (currentDealerIdx < dealers.size() && dealers.get(currentDealerIdx).name.equals(pending.name)
+                            && negotiationRound == 0) {
+                        log("STATUS: No response from " + pending.name + ". Moving to next dealer...");
+                        currentDealerIdx++;
+                        startNegotiationWithDealer();
+                    }
+                }
+            });
             log("NEGOTIATION: Starting with " + dealer.name + " @ RM" + currentWillingOffer);
         } else {
             if (!dealFound) {
@@ -259,22 +272,6 @@ public class BuyerAgent extends Agent {
             startNegotiationWithDealer();
         }
     }
-
-//    private void moveToNextDealer() {
-//        currentDealerIdx++;
-//        if (currentDealerIdx < dealers.size()) {
-//            startNegotiationWithDealer();
-//        } else {
-//            log("STATUS: Exhausted dealers. Waiting for cycle market shift before retrying...");
-//            currentDealerIdx = 0; // Reset index
-//
-//            addBehaviour(new WakerBehaviour(this, 3000) {
-//                protected void onWake() {
-//                    startNegotiationWithDealer();
-//                }
-//            });
-//        }
-//    }
 
     private void notifyBroker(String finalPrice, String dealerName) {
         ACLMessage confirm = new ACLMessage(ACLMessage.CONFIRM);
