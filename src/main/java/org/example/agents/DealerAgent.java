@@ -13,9 +13,10 @@ public class DealerAgent extends Agent {
     private int currentTargetPrice;
     private UILogger logger;
     private int negotiationCount = 0;
-    private final int deadlineCycles = 50;
-    private final double beta = 2.0;
+    private NegotiationConfig config = NegotiationConfig.defaults();
     private int stockCount;
+    private int manualTargetPrice = -1;
+    private NegotiationConfig.Strategy activeStrategy;
 
     protected void setup() {
         Object[] args = getArguments();
@@ -23,17 +24,22 @@ public class DealerAgent extends Agent {
         retailPrice = Integer.parseInt((String) args[1]);
         stockCount = Integer.parseInt((String) args[2]); // read stock from args
         logger = (UILogger) args[3];                     // ★ logger is at index 3
-        minPrice = (int)(retailPrice * 0.70);
+        if (args.length > 4 && args[4] instanceof NegotiationConfig) {
+            config = (NegotiationConfig) args[4];
+        }
+        minPrice = (int)(retailPrice * config.getDealerReservePercent());
         currentTargetPrice = retailPrice;
+        activeStrategy = config.getStrategy();
 
-        log("STATUS: Registered with retail price RM" + retailPrice + ", reserve: RM" + minPrice);
+        log("STATUS: Registered with retail price RM" + retailPrice + ", reserve: RM" + minPrice
+                + " | Strategy: " + config.getStrategy() + strategySwitchText());
 
         // Register with Broker
         addBehaviour(new OneShotBehaviour() {
             public void action() {
                 ACLMessage inform = new ACLMessage(ACLMessage.INFORM);
                 inform.addReceiver(new AID("broker", AID.ISLOCALNAME));
-                inform.setContent(car + ";" + retailPrice + ";" + stockCount);
+                inform.setContent(car + ";" + retailPrice + ";" + stockCount + ";" + minPrice);
                 send(inform);
                 log("STATUS: Listed " + car + " on marketplace | Stock: " + stockCount);
 
@@ -51,16 +57,33 @@ public class DealerAgent extends Agent {
                 if (msg != null) {
                     if ("CYCLE_UPDATE".equals(msg.getOntology()) || "START_CYCLE".equals(msg.getOntology())) {
                         int currentCycle = Integer.parseInt(msg.getContent());
-                        int t = Math.min(currentCycle, deadlineCycles);
+                        int t = Math.min(currentCycle, config.getDeadlineCycles());
 
                         /*
                         The Math:
                         Price(t) = P(initial) - [P(initial) - P(reserve)] * [t / t(max)]^β
                          */
-                        double concessionFactor = Math.pow((double) t / deadlineCycles, beta);
-                        currentTargetPrice = (int) (retailPrice - ((retailPrice - minPrice) * concessionFactor));
+                        NegotiationConfig.Strategy effectiveStrategy = config.getEffectiveStrategy(t);
+                        if (effectiveStrategy != activeStrategy) {
+                            activeStrategy = effectiveStrategy;
+                            log("STATUS: Strategy shifted to " + activeStrategy + " at cycle " + t);
+                        }
+                        double concessionFactor = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
+                        int cycleTarget = (int) (retailPrice - ((retailPrice - minPrice) * concessionFactor));
+                        currentTargetPrice = manualTargetPrice >= 0
+                                ? Math.max(minPrice, manualTargetPrice)
+                                : Math.max(minPrice, (int)(cycleTarget * config.getManualDealerTargetPercent()));
                         log("Dealer Agent " + getLocalName() + " has set vehicle " + car + " to RM" + currentTargetPrice);
 
+                    } else if ("PRICE_ADJUSTMENT".equals(msg.getOntology())) {
+                        try {
+                            int adjustedPrice = Integer.parseInt(msg.getContent());
+                            manualTargetPrice = Math.max(minPrice, adjustedPrice);
+                            currentTargetPrice = manualTargetPrice;
+                            log("STATUS: Manual target adjusted to RM" + currentTargetPrice);
+                        } catch (NumberFormatException e) {
+                            log("STATUS: Ignored invalid manual price adjustment: " + msg.getContent());
+                        }
                     } else if (msg.getPerformative() == ACLMessage.PROPOSE) {
                         negotiationCount++;
                         int buyerOffer = Integer.parseInt(msg.getContent());
@@ -102,5 +125,12 @@ public class DealerAgent extends Agent {
 
     private void log(String m) {
         if (logger != null) logger.log(getLocalName() + ": " + m);
+    }
+
+    private String strategySwitchText() {
+        if (config.getStrategySwitchCycle() <= 0 || config.getSwitchStrategy() == config.getStrategy()) {
+            return "";
+        }
+        return " -> " + config.getSwitchStrategy() + " at cycle " + config.getStrategySwitchCycle();
     }
 }

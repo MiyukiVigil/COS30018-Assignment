@@ -8,7 +8,7 @@ package org.example.agents;
 import jade.core.*;
 import jade.lang.acl.ACLMessage;
 import jade.core.behaviours.CyclicBehaviour;
-import jade.core.behaviours.OneShotBehaviour;
+import jade.core.behaviours.WakerBehaviour;
 import org.example.MainUI.UILogger;
 import java.util.HashSet;
 import java.util.Set;
@@ -18,6 +18,8 @@ public class SpaceControl extends Agent {
     private final Set<AID> completeAgents = new HashSet<>();
     private int cycleCount = 0;
     private boolean isPaused = false;
+    private boolean cycleAdvancePending = false;
+    private final long autoCycleDelayMs = 300;
     private UILogger logger;
 
     protected void setup() {
@@ -47,14 +49,28 @@ public class SpaceControl extends Agent {
                                 // ★ CHANGED: keep cycling after an agent deregisters if others are still active
                                 if (!isPaused && !activeAgents.isEmpty()) {
                                     log("Agent left market. Continuing cycle for remaining agents.");
-                                    broadcastCycle(1);
+                                    scheduleCycleAdvance();
                                 }
                             } else if ("ACTION_COMPLETED".equals(ontology)) {
                                 if (!isPaused) {
-                                    log("Market Action Detected! Auto-advancing cycle.");
-                                    broadcastCycle(1);
+                                    log("Market Action Detected! Scheduling next cycle.");
+                                    scheduleCycleAdvance();
                                 } else {
                                     log("Market Action Detected, but system is PAUSED. Standing by for manual input.");
+                                }
+                            } else if ("PAUSE".equals(ontology)) {
+                                isPaused = true;
+                                log("Space Control paused.");
+                            } else if ("RESUME".equals(ontology)) {
+                                isPaused = false;
+                                log("Space Control resumed.");
+                                if (!activeAgents.isEmpty()) {
+                                    scheduleCycleAdvance();
+                                }
+                            } else if ("STEP".equals(ontology)) {
+                                if (!activeAgents.isEmpty()) {
+                                    cycleAdvancePending = false;
+                                    broadcastCycle(1);
                                 }
                             }
                         } else {
@@ -65,8 +81,24 @@ public class SpaceControl extends Agent {
         );
     }
 
+    private void scheduleCycleAdvance() {
+        if (cycleAdvancePending || activeAgents.isEmpty()) {
+            return;
+        }
+
+        cycleAdvancePending = true;
+        addBehaviour(new WakerBehaviour(this, autoCycleDelayMs) {
+            protected void onWake() {
+                cycleAdvancePending = false;
+                if (!isPaused && !activeAgents.isEmpty()) {
+                    broadcastCycle(1);
+                }
+            }
+        });
+    }
+
     private void broadcastCycle(int increment) {
-        cycleCount ++;
+        cycleCount += increment;
 
         ACLMessage updateCycle = new ACLMessage(ACLMessage.PROPAGATE);
         updateCycle.setOntology("CYCLE_UPDATE");

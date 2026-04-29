@@ -2,8 +2,13 @@ package org.example;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import jade.core.Profile;
 import jade.core.ProfileImpl;
@@ -31,6 +36,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
+import org.example.agents.NegotiationConfig;
 
 public class MainUI extends Application {
     private TextArea logArea = new TextArea();
@@ -39,6 +45,7 @@ public class MainUI extends Application {
     private Label transactionCountLabel = new Label("0");
     private Label revenueLabel = new Label("RM 0.00");
     private ContainerController cc;
+    private UILogger appLogger;
     private int buyerCount = 0;
     private int dealerCount = 0;
     private int dealsClosed = 0;
@@ -51,6 +58,23 @@ public class MainUI extends Application {
     private LineChart<Number, Number> priceChart;
     private Button playPauseBtn;
     private boolean isAutoPlay = true;
+    private ComboBox<String> strategyChoice;
+    private ComboBox<String> switchStrategyChoice;
+    private TextField deadlineCyclesField;
+    private TextField buyerStartPercentField;
+    private TextField reservePercentField;
+    private TextField maxRoundsField;
+    private TextField retryLimitField;
+    private TextField stuckRoundsField;
+    private TextField strategySwitchCycleField;
+    private TextField manualDealerNameField;
+    private TextField manualDealerPriceField;
+    private Label negotiationControlStatusLabel = new Label("No waiting buyers");
+    private List<String> waitingBuyerAgents = new ArrayList<>();
+    private List<String> buyerAgents = new ArrayList<>();
+    private final AtomicLong commandAgentCounter = new AtomicLong();
+    private final AtomicLong demoScenarioCounter = new AtomicLong();
+    private static final Pattern RM_AMOUNT_PATTERN = Pattern.compile("RM\\s*(\\d+)");
 
     // Modern Color Palette
     private static final String PRIMARY_BLUE = "#1e40af";
@@ -91,22 +115,30 @@ public class MainUI extends Application {
             String timestamp = "[" + LocalTime.now().format(timeFormatter) + "] ";
             final String formattedMsg = timestamp + msg + "\n";
 
-            boolean isBuyerReg = msg.contains("Buyer") && msg.contains("registered");
+            boolean isBuyerReg = msg.contains("Buyer") && (msg.contains("registered") || msg.contains("added"));
             boolean isDealerReg = msg.contains("Dealer") && msg.contains("listed");
             boolean isRevenue = msg.contains("[BROKER] REVENUE:");
             boolean isDealConfirmed = msg.contains("[BROKER] DEAL CONFIRMED:"); // ★ CHANGED: detect deal confirmed
+            boolean isPerformance = msg.contains("[BROKER] PERFORMANCE:");
             boolean isCycleShift = msg.contains("Cycle Shift:");
             boolean isSetupMsg = msg.contains("BROKER ONLINE") ||
                     msg.contains("Transaction Fee") ||
                     msg.contains("Initializing Space Control");
-            boolean isPriceUpdate = msg.contains("has set buying price to RM") ||
-                    (msg.contains("has set vehicle") && msg.contains("to RM"));
+            boolean isPriceUpdate = msg.contains("RM") && (
+                    msg.contains("has set buying price") ||
+                    msg.contains("has set vehicle") ||
+                    msg.contains("Buyer offered") ||
+                    msg.contains("counter-offered") ||
+                    msg.contains("COUNTER: Offered") ||
+                    msg.contains("DEAL CLOSED") ||
+                    msg.contains("SUCCESS! Purchased")
+            );
             boolean isNegotiationAction = msg.contains("DEAL") || msg.contains("SUCCESS") ||
                     msg.contains("COUNTER") || msg.contains("OFFER") ||
                     msg.contains("AGREED") || msg.contains("STATUS:");
 
             Platform.runLater(() -> {
-                if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift || isPriceUpdate || isNegotiationAction || isRevenue || isDealConfirmed) { // ★ CHANGED: added isDealConfirmed
+                if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift || isPriceUpdate || isNegotiationAction || isRevenue || isDealConfirmed || isPerformance) { // ★ CHANGED: added isDealConfirmed
                     logArea.appendText(formattedMsg);
                 }
 
@@ -150,9 +182,11 @@ public class MainUI extends Application {
                 }
             });
         };
+        appLogger = logger;
 
         cc.createNewAgent("broker", "org.example.agents.BrokerAgent", new Object[]{logger}).start();
         cc.createNewAgent("space", "org.example.agents.SpaceControl", new Object[]{logger}).start();
+        launchSniffer(logger);
 
         VBox mainContent = createMainContent(logger);
 
@@ -168,8 +202,14 @@ public class MainUI extends Application {
     private void updatePriceChart(String msg) {
         try {
             String agentName = msg.substring(0, msg.indexOf(":")).trim();
-            int rmIndex = msg.indexOf("to RM");
-            double amount = Double.parseDouble(msg.substring(rmIndex + 5).trim().split(" ")[0]);
+            Matcher matcher = RM_AMOUNT_PATTERN.matcher(msg);
+            double amount = -1;
+            while (matcher.find()) {
+                amount = Double.parseDouble(matcher.group(1));
+            }
+            if (amount < 0) {
+                return;
+            }
 
             XYChart.Series<Number, Number> series = seriesMap.computeIfAbsent(agentName, k -> {
                 XYChart.Series<Number, Number> s = new XYChart.Series<>();
@@ -190,7 +230,10 @@ public class MainUI extends Application {
 
     private VBox createMainContent(UILogger logger) {
         TabPane tp = new TabPane();
-        tp.setStyle("-fx-font-size: 12; -fx-font-family: 'Segoe UI', Arial;");
+        tp.setStyle(
+                "-fx-font-size: 12; -fx-font-family: 'Segoe UI', Arial; " +
+                        "-fx-background-color: " + LIGHT_GRAY + "; -fx-tab-min-height: 38;"
+        );
 
         Tab dashboardTab = new Tab("Dashboard", createBrokerView());
         dashboardTab.setClosable(false);
@@ -205,25 +248,93 @@ public class MainUI extends Application {
 
         tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, analysisTab, logTab);
         tp.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-        return new VBox(tp);
+
+        VBox root = new VBox(0);
+        root.setStyle("-fx-background-color: " + LIGHT_GRAY + "; -fx-font-family: 'Segoe UI', Arial;");
+        root.getChildren().addAll(createAppHeader(), createGlobalControlBar(), tp);
+        VBox.setVgrow(tp, Priority.ALWAYS);
+        return root;
+    }
+
+    private VBox createAppHeader() {
+        VBox header = new VBox(6);
+        header.setPadding(new Insets(18, 28, 16, 28));
+        header.setStyle("-fx-background-color: white; -fx-border-color: #dbe4ef; -fx-border-width: 0 0 1 0;");
+
+        Label title = new Label("Automated Car Negotiation System");
+        title.setStyle("-fx-font-size: 24; -fx-font-weight: 700; -fx-text-fill: " + DARK_TEXT + ";");
+
+        Label subtitle = new Label("JADE multi-agent marketplace with configurable negotiation, live ACL inspection, and performance tracking");
+        subtitle.setStyle("-fx-font-size: 12; -fx-text-fill: #64748b;");
+
+        header.getChildren().addAll(title, subtitle);
+        return header;
     }
 
     private void toggleAutoplay() {
         isAutoPlay = !isAutoPlay;
-        playPauseBtn.setText(isAutoPlay ? "⏸ Pause" : "▶ Autoplay");
+        if (playPauseBtn != null) {
+            playPauseBtn.setText(isAutoPlay ? "Pause" : "Resume");
+        }
         sendSpaceCommand(isAutoPlay ? "RESUME" : "PAUSE");
+    }
+
+    private void updateNegotiationControlStatus() {
+        if (negotiationControlStatusLabel == null) {
+            return;
+        }
+
+        int waitingCount = waitingBuyerAgents.size();
+        int totalCount = buyerAgents.size();
+        String state = isAutoPlay ? "running" : "paused";
+        negotiationControlStatusLabel.setText("Buyers: " + totalCount + " total | "
+                + waitingCount + " waiting | Simulation " + state);
+    }
+
+    private void loggerLog(String message) {
+        String timestamp = "[" + LocalTime.now().format(timeFormatter) + "] ";
+        logArea.appendText(timestamp + "[UI] " + message + "\n");
     }
 
     private void sendSpaceCommand(String command) {
         try {
-            jade.lang.acl.ACLMessage msg = new jade.lang.acl.ACLMessage(jade.lang.acl.ACLMessage.INFORM);
-            msg.addReceiver(new jade.core.AID("space", jade.core.AID.ISLOCALNAME));
-            msg.setOntology(command);
-
-            cc.createNewAgent("bridge-" + System.currentTimeMillis(), "jade.core.Agent", null).start();
+            cc.createNewAgent(nextAgentName("space-command"), "org.example.agents.SpaceCommandAgent",
+                    new Object[]{command, "space", ""}).start();
         } catch (Exception e) {
             System.err.println("Error sending command to SpaceControl: " + e.getMessage());
         }
+    }
+
+    private void sendDealerPriceAdjustment(String dealerName, String price) {
+        try {
+            cc.createNewAgent(nextAgentName("dealer-command"), "org.example.agents.SpaceCommandAgent",
+                    new Object[]{"PRICE_ADJUSTMENT", dealerName, price}).start();
+        } catch (Exception e) {
+            showAlert("❌ Error sending price adjustment: " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    private void sendAgentCommand(String agentName, String command) {
+        try {
+            cc.createNewAgent(nextAgentName("agent-command"), "org.example.agents.SpaceCommandAgent",
+                    new Object[]{command, agentName, ""}).start();
+        } catch (Exception e) {
+            showAlert("❌ Error sending command to " + agentName + ": " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    private void launchSniffer(UILogger logger) {
+        try {
+            cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
+                    new Object[]{"broker;space;DemoBuyer*;DemoAuto*;BudgetCars*"}).start();
+            logger.log("STATUS: JADE Sniffer Agent launched for broker, space, and demo agents.");
+        } catch (Exception e) {
+            logger.log("STATUS: Sniffer not launched: " + e.getMessage());
+        }
+    }
+
+    private String nextAgentName(String prefix) {
+        return prefix + "-" + System.nanoTime() + "-" + commandAgentCounter.incrementAndGet();
     }
 
     private VBox createBrokerView() {
@@ -231,7 +342,7 @@ public class MainUI extends Application {
         box.setPadding(new Insets(25));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("📊 Marketplace Dashboard");
+        Label headerLabel = new Label("Marketplace Dashboard");
         headerLabel.setStyle("-fx-font-size: 26; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         HBox statsBox = createStatsCard();
@@ -278,7 +389,7 @@ public class MainUI extends Application {
     private HBox createStatsCard() {
         HBox statsBox = new HBox(20);
         statsBox.setPadding(new Insets(25));
-        statsBox.setStyle("-fx-background-color: white; -fx-border-radius: 12; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 8, 0, 0, 2);");
+        statsBox.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
 
         VBox buyerCard = createStatCard("Active Buyers", buyerCountLabel, ACCENT_BLUE);
         VBox dealerCard = createStatCard("Active Dealers", dealerCountLabel, WARNING_ORANGE);
@@ -297,7 +408,7 @@ public class MainUI extends Application {
     private VBox createQuickGuideBox() {
         VBox guideBox = new VBox(12);
         guideBox.setPadding(new Insets(20));
-        guideBox.setStyle("-fx-background-color: white; -fx-border-radius: 12; -fx-border-color: #fbbf24; -fx-border-width: 2; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.08), 6, 0, 0, 1);");
+        guideBox.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #fdba74; -fx-border-width: 1;");
 
         Label titleLabel = new Label("Quick Setup Guide");
         titleLabel.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
@@ -341,7 +452,7 @@ public class MainUI extends Application {
     private VBox createStatCard(String title, Label valueLabel, String color) {
         VBox card = new VBox(12);
         card.setPadding(new Insets(20));
-        card.setStyle("-fx-background-color: white; -fx-border-color: " + color + "; -fx-border-width: 0 0 4 0; -fx-border-radius: 8; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.08), 6, 0, 0, 1);");
+        card.setStyle("-fx-background-color: #ffffff; -fx-background-radius: 8; -fx-border-color: " + color + "; -fx-border-width: 0 0 4 0; -fx-border-radius: 8;");
 
         Label titleLabel = new Label(title);
         titleLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: 500;");
@@ -357,22 +468,22 @@ public class MainUI extends Application {
         box.setPadding(new Insets(25));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("👥 Buyer Portal");
+        Label headerLabel = new Label("Buyer Portal");
         headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         // Warning banner if no dealers
         VBox warningBanner = new VBox();
         warningBanner.setPadding(new Insets(15));
-        warningBanner.setStyle("-fx-background-color: #fef3c7; -fx-border-color: #fbbf24; -fx-border-radius: 8; -fx-border-width: 2;");
-        Label warningText = new Label("⚠️ IMPORTANT: Register dealers first in the Dealer Portal before adding buyers");
+        warningBanner.setStyle("-fx-background-color: #fff7ed; -fx-background-radius: 8; -fx-border-color: #fdba74; -fx-border-radius: 8; -fx-border-width: 1;");
+        Label warningText = new Label("Register dealers first in the Dealer Portal before adding buyers.");
         warningText.setStyle("-fx-font-size: 12; -fx-text-fill: #92400e; -fx-font-weight: bold; -fx-wrap-text: true;");
         warningBanner.getChildren().add(warningText);
 
         VBox formSection = new VBox(18);
         formSection.setPadding(new Insets(25));
-        formSection.setStyle("-fx-background-color: white; -fx-border-radius: 12; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 8, 0, 0, 2);");
+        formSection.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
 
-        Label formTitle = new Label("🔍 Register New Buyer");
+        Label formTitle = new Label("Add Buyer Agent");
         formTitle.setStyle("-fx-font-size: 16; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         GridPane form = new GridPane();
@@ -398,7 +509,7 @@ public class MainUI extends Application {
         form.add(budgetLabel, 0, 2);
         form.add(budget, 1, 2);
 
-        Button addBuyerBtn = createStyledButton("▶ Start Negotiation", ACCENT_BLUE);
+        Button addBuyerBtn = createStyledButton("Add Buyer Agent", ACCENT_BLUE);
         addBuyerBtn.setPrefWidth(280);
 
         addBuyerBtn.setOnAction(e -> {
@@ -425,12 +536,15 @@ public class MainUI extends Application {
                 }
 
                 cc.createNewAgent(name, "org.example.agents.BuyerAgent",
-                        new Object[]{car, budgetStr, logger}).start();
-                logger.log("Buyer '" + name + "' registered - searching for " + car);
+                        new Object[]{car, budgetStr, logger, buildNegotiationConfig(), true}).start();
+                buyerAgents.add(name);
+                waitingBuyerAgents.add(name);
+                updateNegotiationControlStatus();
+                logger.log("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budgetStr);
                 buyerName.clear();
                 carModel.setValue(null);
                 budget.clear();
-                showAlert("✅ Buyer " + name + " started negotiation!", Alert.AlertType.INFORMATION);
+                showAlert("✅ Buyer " + name + " added. Press Start to begin negotiation.", Alert.AlertType.INFORMATION);
             } catch (NumberFormatException ex) {
                 showAlert("❌ Budget must be a valid number", Alert.AlertType.ERROR);
             } catch (Exception ex) {
@@ -450,25 +564,184 @@ public class MainUI extends Application {
         return box;
     }
 
+    private VBox createGlobalControlBar() {
+        VBox panel = new VBox(14);
+        panel.setPadding(new Insets(14, 28, 16, 28));
+        panel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #dbe4ef; -fx-border-width: 0 0 1 0;");
+
+        Label title = new Label("Simulation Controls");
+        title.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+
+        negotiationControlStatusLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: bold;");
+        updateNegotiationControlStatus();
+
+        Button startBtn = createStyledButton("Start", SUCCESS_GREEN);
+        startBtn.setPrefWidth(120);
+        startBtn.setOnAction(e -> {
+            if (waitingBuyerAgents.isEmpty()) {
+                showAlert("No waiting buyers to start.", Alert.AlertType.INFORMATION);
+                return;
+            }
+            for (String buyer : new ArrayList<>(waitingBuyerAgents)) {
+                sendAgentCommand(buyer, "START_NEGOTIATION");
+            }
+            loggerLog("Started " + waitingBuyerAgents.size() + " waiting buyer negotiation(s).");
+            waitingBuyerAgents.clear();
+            isAutoPlay = true;
+            playPauseBtn.setText("Pause");
+            sendSpaceCommand("RESUME");
+            updateNegotiationControlStatus();
+        });
+
+        playPauseBtn = createStyledButton("Pause", WARNING_ORANGE);
+        playPauseBtn.setPrefWidth(120);
+        playPauseBtn.setOnAction(e -> {
+            toggleAutoplay();
+            updateNegotiationControlStatus();
+        });
+
+        Button stepBtn = createStyledButton("Step Cycle", ACCENT_BLUE);
+        stepBtn.setPrefWidth(120);
+        stepBtn.setOnAction(e -> sendSpaceCommand("STEP"));
+
+        Button snifferBtn = createStyledButton("Sniffer", WARNING_ORANGE);
+        snifferBtn.setPrefWidth(120);
+        snifferBtn.setOnAction(e -> launchSniffer(msg -> logArea.appendText(msg + "\n")));
+
+        Button demoBtn = createStyledButton("Demo Setup", PRIMARY_BLUE);
+        demoBtn.setPrefWidth(130);
+        demoBtn.setOnAction(e -> createDemoScenario());
+
+        Button stopBtn = createStyledButton("Stop", ERROR_RED);
+        stopBtn.setPrefWidth(120);
+        stopBtn.setOnAction(e -> {
+            if (buyerAgents.isEmpty()) {
+                showAlert("No buyer negotiations to stop.", Alert.AlertType.INFORMATION);
+                return;
+            }
+            for (String buyer : new ArrayList<>(buyerAgents)) {
+                sendAgentCommand(buyer, "STOP_NEGOTIATION");
+            }
+            waitingBuyerAgents.clear();
+            buyerAgents.clear();
+            sendSpaceCommand("PAUSE");
+            isAutoPlay = false;
+            playPauseBtn.setText("Resume");
+            updateNegotiationControlStatus();
+            loggerLog("Stopped all buyer negotiations.");
+        });
+
+        HBox left = new HBox(12, demoBtn, startBtn, playPauseBtn, stopBtn, stepBtn, snifferBtn);
+        left.setStyle("-fx-alignment: center-left;");
+
+        VBox statusBox = new VBox(3);
+        Label statusTitle = new Label("Status");
+        statusTitle.setStyle("-fx-font-size: 11; -fx-text-fill: #64748b; -fx-font-weight: bold;");
+        statusBox.getChildren().addAll(statusTitle, negotiationControlStatusLabel);
+
+        HBox row = new HBox(24, left, statusBox);
+        row.setStyle("-fx-alignment: center-left;");
+        HBox.setHgrow(statusBox, Priority.ALWAYS);
+        panel.getChildren().addAll(title, row);
+        return panel;
+    }
+
+    private void createDemoScenario() {
+        long demoId = demoScenarioCounter.incrementAndGet();
+        NegotiationConfig config = buildDemoNegotiationConfig();
+
+        try {
+            String[][] dealers = new String[][]{
+                    {"DemoAutoA-" + demoId, "Toyota Camry", "100000", "2"},
+                    {"DemoAutoB-" + demoId, "Toyota Camry", "96000", "2"},
+                    {"DemoAutoC-" + demoId, "Toyota Camry", "92000", "1"},
+                    {"BudgetCars-" + demoId, "Honda Civic", "87000", "2"},
+                    {"FamilyDrive-" + demoId, "Honda CR-V", "145000", "1"},
+                    {"TruckHub-" + demoId, "Toyota Fortuner", "180000", "1"}
+            };
+            for (String[] dealer : dealers) {
+                createDemoDealer(dealer[0], dealer[1], dealer[2], dealer[3], config);
+            }
+
+            String[][] buyers = new String[][]{
+                    {"DemoBuyerPremium-" + demoId, "Toyota Camry", "116000"},
+                    {"DemoBuyerStubborn-" + demoId, "Toyota Camry", "108000"},
+                    {"DemoBuyerTight-" + demoId, "Toyota Camry", "98000"},
+                    {"DemoBuyerCivic-" + demoId, "Honda Civic", "102000"},
+                    {"DemoBuyerSUV-" + demoId, "Honda CR-V", "150000"},
+                    {"DemoBuyerStretch-" + demoId, "Toyota Fortuner", "168000"},
+                    {"DemoBuyerBudget-" + demoId, "Toyota Camry", "65000"},
+                    {"DemoBuyerOverdrive-" + demoId, "Toyota Camry", "112000"}
+            };
+            for (String[] buyer : buyers) {
+                createDemoBuyer(buyer[0], buyer[1], buyer[2], config);
+            }
+
+            dealerCount += dealers.length;
+            dealerCountLabel.setText(String.valueOf(dealerCount));
+            updateDealerStatus();
+            buyerCount += buyers.length;
+            buyerCountLabel.setText(String.valueOf(buyerCount));
+            updateBuyerStatus();
+            updateNegotiationControlStatus();
+
+            loggerLog("Demo scenario " + demoId + " added: " + dealers.length + " dealers and " + buyers.length
+                    + " waiting buyers. Press Start to stress test negotiation and strategy switching.");
+            showAlert("Demo scenario added. Press Start to begin negotiation.", Alert.AlertType.INFORMATION);
+        } catch (Exception ex) {
+            showAlert("❌ Error creating demo scenario: " + ex.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    private NegotiationConfig buildDemoNegotiationConfig() {
+        NegotiationConfig base = buildNegotiationConfig();
+        return new NegotiationConfig(
+                base.getStrategy(),
+                Math.max(base.getDeadlineCycles(), 30),
+                Math.min(base.getBuyerStartPercent(), 0.62),
+                Math.max(base.getDealerReservePercent(), 0.78),
+                Math.max(base.getMaxRoundsPerDealer(), 6),
+                Math.max(base.getMaxSearchRetries(), 1),
+                Math.max(base.getStuckRoundsBeforeAcceleration(), 1),
+                base.getManualDealerTargetPercent(),
+                base.getStrategySwitchCycle() > 0 ? Math.min(base.getStrategySwitchCycle(), 2) : 2,
+                base.getSwitchStrategy() == base.getStrategy() ? NegotiationConfig.Strategy.CONCEDER : base.getSwitchStrategy()
+        );
+    }
+
+    private void createDemoDealer(String name, String car, String price, String stock, NegotiationConfig config) throws Exception {
+        cc.createNewAgent(name, "org.example.agents.DealerAgent",
+                new Object[]{car, price, stock, appLogger, config}).start();
+        loggerLog("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
+    }
+
+    private void createDemoBuyer(String name, String car, String budget, NegotiationConfig config) throws Exception {
+        cc.createNewAgent(name, "org.example.agents.BuyerAgent",
+                new Object[]{car, budget, appLogger, config, true}).start();
+        buyerAgents.add(name);
+        waitingBuyerAgents.add(name);
+        loggerLog("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budget);
+    }
+
     private VBox createDealerView(UILogger logger) {
         VBox box = new VBox(25);
         box.setPadding(new Insets(25));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("🚙 Dealer Portal");
+        Label headerLabel = new Label("Dealer Portal");
         headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
         // Info banner
         VBox infoBanner = new VBox();
         infoBanner.setPadding(new Insets(15));
-        infoBanner.setStyle("-fx-background-color: #dbeafe; -fx-border-color: #3b82f6; -fx-border-radius: 8; -fx-border-width: 2;");
-        Label infoText = new Label("ℹ️ Register your car inventory here first. Buyers will negotiate with available dealers.");
+        infoBanner.setStyle("-fx-background-color: #eff6ff; -fx-background-radius: 8; -fx-border-color: #93c5fd; -fx-border-radius: 8; -fx-border-width: 1;");
+        Label infoText = new Label("Register car inventory here first. Buyers will negotiate with available dealers.");
         infoText.setStyle("-fx-font-size: 12; -fx-text-fill: #0c4a6e; -fx-font-weight: bold; -fx-wrap-text: true;");
         infoBanner.getChildren().add(infoText);
         VBox formSection = new VBox(18);
         formSection.setPadding(new Insets(25));
-        formSection.setStyle("-fx-background-color: white; -fx-border-radius: 12; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.1), 8, 0, 0, 2);");
+        formSection.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
 
-        Label formTitle = new Label("📋 Register & List New Car");
+        Label formTitle = new Label("Register and List New Car");
         formTitle.setStyle("-fx-font-size: 16; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         GridPane form = new GridPane();
@@ -499,7 +772,7 @@ public class MainUI extends Application {
         form.add(stockLabel, 0, 3);
         form.add(stockField, 1, 3);
 
-        Button addDealerBtn = createStyledButton("📋 List Car", WARNING_ORANGE);
+        Button addDealerBtn = createStyledButton("List Car", WARNING_ORANGE);
         addDealerBtn.setPrefWidth(280);
 
         addDealerBtn.setOnAction(e -> {
@@ -527,7 +800,7 @@ public class MainUI extends Application {
                 }
 
                 cc.createNewAgent(name, "org.example.agents.DealerAgent",
-                        new Object[]{car, price, stock, logger}).start();
+                        new Object[]{car, price, stock, logger, buildNegotiationConfig()}).start();
                 logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
                 dealerName.clear();
                 carModel.setValue(null);
@@ -558,7 +831,7 @@ public class MainUI extends Application {
         box.setPadding(new Insets(25));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("📈 Market Analytics");
+        Label headerLabel = new Label("Market Analytics");
         headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         TextArea analysisArea = new TextArea();
@@ -610,11 +883,120 @@ public class MainUI extends Application {
         */
         
         analysisArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-border-radius: 4;");
-        box.getChildren().addAll(headerLabel, analysisArea);
+        box.getChildren().addAll(headerLabel, createSimulationControlPanel(), analysisArea);
         VBox.setVgrow(analysisArea, Priority.ALWAYS);
         // --------------------------------------------------
 
         return box;
+    }
+
+    private VBox createSimulationControlPanel() {
+        VBox panel = new VBox(15);
+        panel.setPadding(new Insets(20));
+        panel.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
+
+        Label title = new Label("Negotiation Settings");
+        title.setStyle("-fx-font-size: 15; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+
+        strategyChoice = new ComboBox<>();
+        strategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
+        strategyChoice.setValue("BOULWARE");
+        strategyChoice.setPrefWidth(180);
+
+        switchStrategyChoice = new ComboBox<>();
+        switchStrategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
+        switchStrategyChoice.setValue("CONCEDER");
+        switchStrategyChoice.setPrefWidth(180);
+
+        deadlineCyclesField = createStyledTextField("50");
+        deadlineCyclesField.setText("50");
+        strategySwitchCycleField = createStyledTextField("8");
+        strategySwitchCycleField.setText("8");
+        buyerStartPercentField = createStyledTextField("70");
+        buyerStartPercentField.setText("70");
+        reservePercentField = createStyledTextField("70");
+        reservePercentField.setText("70");
+        maxRoundsField = createStyledTextField("3");
+        maxRoundsField.setText("3");
+        retryLimitField = createStyledTextField("2");
+        retryLimitField.setText("2");
+        stuckRoundsField = createStyledTextField("2");
+        stuckRoundsField.setText("2");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(10);
+        grid.add(new Label("Strategy:"), 0, 0);
+        grid.add(strategyChoice, 1, 0);
+        grid.add(new Label("Deadline cycles:"), 2, 0);
+        grid.add(deadlineCyclesField, 3, 0);
+        grid.add(new Label("Switch at cycle:"), 0, 1);
+        grid.add(strategySwitchCycleField, 1, 1);
+        grid.add(new Label("Then strategy:"), 2, 1);
+        grid.add(switchStrategyChoice, 3, 1);
+        grid.add(new Label("Buyer start %:"), 0, 2);
+        grid.add(buyerStartPercentField, 1, 2);
+        grid.add(new Label("Dealer reserve %:"), 2, 2);
+        grid.add(reservePercentField, 3, 2);
+        grid.add(new Label("Max rounds/dealer:"), 0, 3);
+        grid.add(maxRoundsField, 1, 3);
+        grid.add(new Label("Search retries:"), 2, 3);
+        grid.add(retryLimitField, 3, 3);
+        grid.add(new Label("Stuck rounds:"), 0, 4);
+        grid.add(stuckRoundsField, 1, 4);
+
+        manualDealerNameField = createStyledTextField("Dealer agent name");
+        manualDealerPriceField = createStyledTextField("New target price");
+        Button adjustPriceBtn = createStyledButton("Adjust Dealer Price", SUCCESS_GREEN);
+        adjustPriceBtn.setOnAction(e -> {
+            String dealer = manualDealerNameField.getText().trim();
+            String price = manualDealerPriceField.getText().trim();
+            if (dealer.isEmpty() || price.isEmpty()) {
+                showAlert("Dealer name and price are required.", Alert.AlertType.WARNING);
+                return;
+            }
+            try {
+                Integer.parseInt(price);
+                sendDealerPriceAdjustment(dealer, price);
+                showAlert("Price adjustment sent to " + dealer, Alert.AlertType.INFORMATION);
+            } catch (NumberFormatException ex) {
+                showAlert("Price must be a valid integer.", Alert.AlertType.ERROR);
+            }
+        });
+
+        HBox manualControls = new HBox(12, manualDealerNameField, manualDealerPriceField, adjustPriceBtn);
+        panel.getChildren().addAll(title, grid, manualControls);
+        return panel;
+    }
+
+    private NegotiationConfig buildNegotiationConfig() {
+        if (strategyChoice == null) {
+            return NegotiationConfig.defaults();
+        }
+
+        try {
+            NegotiationConfig.Strategy strategy = NegotiationConfig.Strategy.valueOf(strategyChoice.getValue());
+            int deadline = Math.max(1, Integer.parseInt(deadlineCyclesField.getText().trim()));
+            double buyerStart = percentFieldToRatio(buyerStartPercentField, 70);
+            double reserve = percentFieldToRatio(reservePercentField, 70);
+            int maxRounds = Math.max(1, Integer.parseInt(maxRoundsField.getText().trim()));
+            int retryLimit = Math.max(0, Integer.parseInt(retryLimitField.getText().trim()));
+            int stuckRounds = Math.max(1, Integer.parseInt(stuckRoundsField.getText().trim()));
+            int switchCycle = Math.max(0, Integer.parseInt(strategySwitchCycleField.getText().trim()));
+            NegotiationConfig.Strategy switchStrategy = NegotiationConfig.Strategy.valueOf(switchStrategyChoice.getValue());
+            return new NegotiationConfig(strategy, deadline, buyerStart, reserve, maxRounds, retryLimit,
+                    stuckRounds, 1.0, switchCycle, switchStrategy);
+        } catch (Exception e) {
+            showAlert("Invalid negotiation settings. Defaults will be used.", Alert.AlertType.WARNING);
+            return NegotiationConfig.defaults();
+        }
+    }
+
+    private double percentFieldToRatio(TextField field, int fallbackPercent) {
+        String raw = field.getText().trim();
+        double value = raw.isEmpty() ? fallbackPercent : Double.parseDouble(raw);
+        value = Math.max(1, Math.min(100, value));
+        return value / 100.0;
     }
 
     private VBox createActivityLogView() {
@@ -622,7 +1004,7 @@ public class MainUI extends Application {
         box.setPadding(new Insets(25));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("📋 System Activity Log");
+        Label headerLabel = new Label("System Activity Log");
         headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         TextArea fullLogArea = new TextArea();
@@ -648,9 +1030,9 @@ public class MainUI extends Application {
 
         HBox controlBox = new HBox(12);
         controlBox.setPadding(new Insets(15));
-        controlBox.setStyle("-fx-background-color: white; -fx-border-radius: 8; -fx-border-color: #e5e7eb; -fx-border-width: 1;");
+        controlBox.setStyle("-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
 
-        Button copyBtn = createStyledButton("📋 Copy Log", ACCENT_BLUE);
+        Button copyBtn = createStyledButton("Copy Log", ACCENT_BLUE);
         copyBtn.setPrefWidth(120);
         copyBtn.setOnAction(e -> {
             var clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
@@ -660,7 +1042,7 @@ public class MainUI extends Application {
             showAlert("Log copied to clipboard!", Alert.AlertType.INFORMATION);
         });
 
-        Button clearBtn = createStyledButton("🗑️ Clear Log", ERROR_RED);
+        Button clearBtn = createStyledButton("Clear Log", ERROR_RED);
         clearBtn.setPrefWidth(120);
         clearBtn.setOnAction(e -> {
             logArea.clear();
