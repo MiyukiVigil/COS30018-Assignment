@@ -72,6 +72,27 @@ mvn javafx:run
 8. Use `Sniffer` to open the JADE Sniffer and observe ACL messages.
 9. Use `Stop` to terminate active buyer negotiations and record them as `NO_DEAL;USER_STOPPED`.
 
+Demo Agents
+----------
+
+The demo setup creates a set of example agents that represent common marketplace roles and negotiation behaviours. Names follow patterns like `DemoAuto*` for dealers and `DemoBuyer*` for buyers; a numeric suffix is appended for each instance (e.g., `DemoAutoA-1`, `DemoBuyerPremium-1`). The demo agents are intended to help exercise different negotiation edge cases:
+
+- `DemoAutoA-*`, `DemoAutoB-*`, `DemoAutoC-*`: Competing Camry dealers with slightly different retail and reserve prices. They demonstrate price competition and how buyers select among multiple similar listings.
+- `BudgetCars-*`: A low-cost dealer (e.g., Honda Civic listings) that tests budget-sensitive buyers and mid-range deals.
+- `FamilyDrive-*`: A family/SUV-focused dealer (e.g., Honda CR-V) representing higher-priced inventory and buyers with larger budgets.
+- `TruckHub-*`: High-end truck dealer (e.g., Toyota Fortuner) to exercise high-budget buyers and extreme counter-offers.
+
+- `DemoBuyerPremium-*`: High-budget buyer who can stretch to pay near retail — useful to validate successful deals and commission calculations.
+- `DemoBuyerStubborn-*`: Conservative/boulware-style buyer who concedes slowly; useful to test negotiations that may drag and trigger strategy switching.
+- `DemoBuyerTight-*`: Budget-constrained buyer that often results in `NO_DEAL;BUDGET_TOO_LOW` outcomes.
+- `DemoBuyerCivic-*`: Buyer specifically targeting lower-priced models (e.g., Civic) to exercise broker search and matching.
+- `DemoBuyerSUV-*`: Buyer targeting SUVs (e.g., CR-V) with larger budgets.
+- `DemoBuyerStretch-*`: High-budget buyer for expensive models (e.g., Fortuner) that stresses multi-round negotiation for large-ticket items.
+- `DemoBuyerBudget-*`: Intentionally underfunded buyer to exercise the no-deal code paths and ensure broker records failures.
+- `DemoBuyerOverdrive-*`: Aggressive buyer that may accelerate concessions quickly; useful to test rapid deal closure.
+
+These demo agent archetypes are configurable via the Market Analysis settings; they exist to provide repeatable scenarios for testing strategy behaviour, sniffer visualization, and performance metrics.
+
 ## Main Files
 
 | File | Purpose |

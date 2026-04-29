@@ -95,6 +95,8 @@ public class DealerAgent extends Agent {
                             accept.setPerformative(ACLMessage.ACCEPT_PROPOSAL);
                             accept.setContent(String.valueOf(buyerOffer));
                             send(accept);
+                            // Notify space that this negotiation action completed
+                            notifySpaceActionCompleted();
                             log("DEAL CLOSED: Accepted offer of RM" + buyerOffer + " | Stock remaining: " + stockCount);
                             if (stockCount <= 0) {
                                 log("STATUS: Out of stock. Closing.");
@@ -106,12 +108,21 @@ public class DealerAgent extends Agent {
                             reject.setPerformative(ACLMessage.REJECT_PROPOSAL);
                             reject.setContent(String.valueOf(currentTargetPrice));
                             send(reject);
+                            // Notify space that this negotiation action completed
+                            notifySpaceActionCompleted();
                             log("COUNTER: Offered RM" + currentTargetPrice);
                         }
                     }
                 } else block();
             }
         });
+    }
+
+    private void notifySpaceActionCompleted() {
+        ACLMessage action = new ACLMessage(ACLMessage.INFORM);
+        action.setOntology("ACTION_COMPLETED");
+        action.addReceiver(new AID("space", AID.ISLOCALNAME));
+        send(action);
     }
 
     //Ignore Inactive Agent so that the cycle continue
