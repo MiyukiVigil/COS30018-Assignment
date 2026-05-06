@@ -10,291 +10,454 @@ import jade.core.behaviours.OneShotBehaviour;
 import jade.core.behaviours.WakerBehaviour;
 import jade.lang.acl.ACLMessage;
 
+/**
+ * BuyerAgent — Phase 3
+ *
+ * Negotiation is now fully broker-routed. The buyer NEVER contacts a dealer directly.
+ *
+ * Flow:
+ *  1. Send BUYER_SEARCH (REQUEST) to broker with sessionId + carModel
+ *  2. Receive BROKER_SHORTLIST (PROPOSE) — parse dealers
+ *  3. Pick next unaffordable-skipped dealer; send BUYER_SHORTLIST (PROPOSE) to broker
+ *     (broker creates session, charges fixed fee, invites dealer)
+ *  4. Receive BROKER_RELAY_COUNTER (REJECT_PROPOSAL) — send BUYER_COUNTER (PROPOSE) to broker
+ *  5. Receive BROKER_RELAY_ACCEPT (ACCEPT_PROPOSAL) — deal done
+ *  6. If max rounds reached → BUYER_WALKAWAY (FAILURE) to broker → try next dealer
+ *
+ * Session IDs: "{buyerLocalName}-{carModel}-{attemptIndex}"
+ * Each dealer attempt is a new session (new fixed fee).
+ */
 public class BuyerAgent extends Agent {
+
+    // ── Config ────────────────────────────────────────────────────────────────
     private String desiredCar;
-    private int maxBudget;
+    private int    maxBudget;
     private UILogger logger;
-    private List<DealerOption> dealers = new ArrayList<>();
-    private int currentDealerIdx = 0;
-    private int negotiationRound = 0;
-    private int bestPriceReceived = Integer.MAX_VALUE;
-    private int initialOffer;
-    private int currentWillingOffer;
-    private String bestDealerName = "";
-    private boolean dealFound = false;
     private NegotiationConfig config = NegotiationConfig.defaults();
-    private int startCycle = -1;
-    private int searchRetries = 0;
-    private boolean negotiationStarted = true;
+    private boolean negotiationStarted = true;  // false = wait for manual start signal
+    private boolean isManualStrategy = false;
+
+    // ── Negotiation state ─────────────────────────────────────────────────────
+    private final List<DealerOption> dealers = new ArrayList<>();
+    private int    currentDealerIdx   = 0;
+    private int    dealerAttemptIndex = 0;  // increments per dealer attempt → unique sessionIds
+    private String activeSessionId    = null;
+
+    private int    negotiationRound       = 0;
+    private int    startCycle             = -1;
+    private int    searchRetries          = 0;
+    private boolean dealFound             = false;
+
+    private int    initialOffer;
+    private int    currentWillingOffer;
     private NegotiationConfig.Strategy activeStrategy;
 
+    // ── Inner types ───────────────────────────────────────────────────────────
     private static class DealerOption {
         String name;
         int listedPrice;
         int reservePrice;
-
-        DealerOption(String name, int listedPrice, int reservePrice) {
-            this.name = name;
-            this.listedPrice = listedPrice;
-            this.reservePrice = reservePrice;
+        DealerOption(String n, int listed, int reserve) {
+            name = n; listedPrice = listed; reservePrice = reserve;
         }
     }
 
+    // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+    @Override
     protected void setup() {
         Object[] args = getArguments();
         desiredCar = (String) args[0];
-        maxBudget = Integer.parseInt((String) args[1]);
-        logger = (UILogger) args[2];
-        if (args.length > 3 && args[3] instanceof NegotiationConfig) {
-            config = (NegotiationConfig) args[3];
-        }
-        if (args.length > 4 && args[4] instanceof Boolean) {
-            negotiationStarted = !((Boolean) args[4]);
-        }
+        maxBudget  = Integer.parseInt((String) args[1]);
+        logger     = (UILogger) args[2];
+        if (args.length > 3 && args[3] instanceof NegotiationConfig) config = (NegotiationConfig) args[3];
+        if (args.length > 4 && args[4] instanceof Boolean) negotiationStarted = !((Boolean) args[4]);
+        if (args.length > 5 && args[5] instanceof Boolean) isManualStrategy = (Boolean) args[5];
 
-        //Initial Negotiating price
-        initialOffer = (int)(maxBudget * config.getBuyerStartPercent());
+        initialOffer       = (int)(maxBudget * config.getBuyerStartPercent());
         currentWillingOffer = initialOffer;
-        activeStrategy = config.getStrategy();
+        activeStrategy     = config.getStrategy();
 
-        log("STATUS: " + (negotiationStarted ? "Searching" : "Waiting to start") + " for " + desiredCar
-                + " (Budget: RM" + maxBudget + ", Strategy: " + config.getStrategy() + strategySwitchText() + ")");
+        log("STATUS: " + (negotiationStarted ? "Searching" : "Waiting to start")
+                + " for " + desiredCar + " (Budget: RM" + maxBudget
+                + ", Strategy: " + config.getStrategy() + strategySwitchText() + ")");
 
-        // 1. Search
+        // Kick off search if auto-start
         addBehaviour(new OneShotBehaviour() {
+            @Override public void action() {
+                if (negotiationStarted) startNegotiationSession();
+            }
+        });
+
+        // Main message loop
+        addBehaviour(new CyclicBehaviour() {
+            @Override
             public void action() {
-                if (negotiationStarted) {
-                    startNegotiationSession();
+                ACLMessage msg = receive();
+                if (msg == null) { block(); return; }
+
+                String ont = msg.getOntology() == null ? "" : msg.getOntology();
+
+                switch (ont) {
+                    case "START_NEGOTIATION":
+                        if (!negotiationStarted) startNegotiationSession();
+                        else log("STATUS: Start ignored — negotiation already running.");
+                        break;
+
+                    case "STOP_NEGOTIATION":
+                        log("STATUS: Negotiation stopped by user.");
+                        sendWalkaway(activeSessionId, "USER_STOPPED");
+                        triggerMarketAction();
+                        doDelete();
+                        break;
+
+                    case "CYCLE_UPDATE":
+                        if (negotiationStarted) handleCycleUpdate(msg);
+                        break;
+
+                    case "BROKER_SHORTLIST":
+                        if (negotiationStarted) handleBrokerShortlist(msg);
+                        break;
+
+                    case "BROKER_RELAY_COUNTER":
+                        // Broker relays dealer's counter-offer to us
+                        if (negotiationStarted) handleBrokerRelayCounter(msg);
+                        break;
+
+                    case "BROKER_RELAY_ACCEPT":
+                        // Broker confirms deal
+                        if (negotiationStarted) handleBrokerRelayAccept(msg);
+                        break;
+
+                    case "BROKER_RELAY_SOLD_OUT":
+                        // Broker tells us the dealer ran out of stock — move to next dealer
+                        if (negotiationStarted) handleBrokerRelaySoldOut(msg);
+                        break;
+
+                    case "MANUAL_ACTION":
+                        handleManualAction(msg);
+                        break;
+
+                    default:
+                        break;
                 }
             }
         });
-
-        // 2. Negotiate with multiple dealers
-        addBehaviour(new CyclicBehaviour() {
-            public void action() {
-                ACLMessage msg = receive();
-                if (msg != null) {
-                    if ("START_NEGOTIATION".equals(msg.getOntology())) {
-                        if (!negotiationStarted) {
-                            startNegotiationSession();
-                        } else {
-                            log("STATUS: Start ignored because negotiation is already running.");
-                        }
-                    } else if ("STOP_NEGOTIATION".equals(msg.getOntology())) {
-                        log("STATUS: Negotiation stopped by user.");
-                        notifyBrokerNoDeal("USER_STOPPED");
-                        triggerMarketAction();
-                        doDelete();
-                    } else if ("CYCLE_UPDATE".equals((msg.getOntology())) && negotiationStarted) {
-                        int currentCycle = Integer.parseInt(msg.getContent());
-
-                        if (startCycle == -1) {
-                            startCycle = currentCycle;
-                        }
-                        int localAge = currentCycle - startCycle;
-                        int t = Math.min(localAge, config.getDeadlineCycles());
-                        /*
-                        The Math:
-                        Price(t) = P(initial) - [P(initial) - P(reserve)] * [t / t(max)]^β
-                         */
-                        NegotiationConfig.Strategy effectiveStrategy = config.getEffectiveStrategy(t);
-                        if (effectiveStrategy != activeStrategy) {
-                            activeStrategy = effectiveStrategy;
-                            log("STATUS: Strategy shifted to " + activeStrategy + " at local cycle " + t);
-                        }
-                        double concessionFactor = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
-                        currentWillingOffer = (int) (initialOffer + ((maxBudget - initialOffer) * concessionFactor));
-                        if (currentWillingOffer > maxBudget) {
-                            currentWillingOffer = maxBudget;
-                        }
-
-                        log("Buyer Agent " + getLocalName() + " has set buying price to RM" + currentWillingOffer + " for vehicle " + desiredCar);
-
-                    } else if (msg.getPerformative() == ACLMessage.PROPOSE && negotiationStarted) {
-                        // Parse all dealer options
-                        String content = msg.getContent();
-                        if (!content.equals("NONE")) {
-                            dealers.clear();
-                            String[] dealerList = content.split(",");
-                            for (String dealer : dealerList) {
-                                if (!dealer.isEmpty()) {
-                                    String[] parts = dealer.split(":");
-                                    int listedPrice = parts.length > 1 ? Integer.parseInt(parts[1]) : maxBudget;
-                                    int reservePrice = parts.length > 2 ? Integer.parseInt(parts[2]) : listedPrice;
-                                    dealers.add(new DealerOption(parts[0], listedPrice, reservePrice));
-                                }
-                            }
-                            if (!dealers.isEmpty()) {
-                                boolean affordableDealerExists = false;
-                                for (DealerOption dealer : dealers) {
-                                    if (dealer.reservePrice <= maxBudget) {
-                                        affordableDealerExists = true;
-                                        break;
-                                    }
-                                }
-                                if (!affordableDealerExists) {
-                                    log("STATUS: Budget too low. Lowest reserve exceeds RM" + maxBudget + ". Ending negotiation.");
-                                    notifyBrokerNoDeal("BUDGET_TOO_LOW");
-                                    triggerMarketAction();
-                                    doDelete();
-                                    return;
-                                }
-                                searchRetries = 0;
-                                log("STATUS: Found " + dealers.size() + " dealer(s). Starting negotiations...");
-                                currentDealerIdx = 0;
-                                startNegotiationWithDealer();
-                            }
-                        } else {
-                            searchRetries++;
-                            if (searchRetries > config.getMaxSearchRetries()) {
-                                log("STATUS: No matching car found after " + config.getMaxSearchRetries() + " retries. Ending search.");
-                                notifyBrokerNoDeal("NO_MATCHING_CAR");
-                                triggerMarketAction();
-                                doDelete();
-                            } else {
-                                log("STATUS: No dealers available for " + desiredCar + ". Retry "
-                                        + searchRetries + "/" + config.getMaxSearchRetries());
-                                addBehaviour(new WakerBehaviour(myAgent, 1500) {
-                                    protected void onWake() { searchBroker(); }
-                                });
-                            }
-                        }
-                    } else if (msg.getPerformative() == ACLMessage.REJECT_PROPOSAL && negotiationStarted) {
-                        handleCounterOffer(msg);
-                    } else if (msg.getPerformative() == ACLMessage.ACCEPT_PROPOSAL && negotiationStarted) {
-                        int finalPrice = Integer.parseInt(msg.getContent());
-                        log("SUCCESS! Purchased " + desiredCar + " for RM" + finalPrice + " from " + msg.getSender().getLocalName());
-                        notifyBroker(String.valueOf(finalPrice), msg.getSender().getLocalName());
-                        dealFound = true;
-
-                        triggerMarketAction();
-
-                        doDelete();
-                    }
-                } else block();
-            }
-        });
     }
+
+    // ── Session management ────────────────────────────────────────────────────
 
     private void startNegotiationSession() {
         negotiationStarted = true;
         log("STATUS: Negotiation started for " + desiredCar + ".");
-        searchBroker();
 
-        ACLMessage register = new ACLMessage(ACLMessage.INFORM);
-        register.setOntology("REGISTER");
-        register.addReceiver(new AID("space", AID.ISLOCALNAME));
-        send(register);
+        // Register with SpaceControl
+        ACLMessage reg = new ACLMessage(ACLMessage.INFORM);
+        reg.setOntology("REGISTER");
+        reg.addReceiver(new AID("space", AID.ISLOCALNAME));
+        send(reg);
+
+        searchBroker();
     }
 
+    /** Send BUYER_SEARCH to broker. Uses a placeholder sessionId for the search phase. */
     public void searchBroker() {
+        // Session ID for the search itself (not a negotiation session yet)
+        String searchId = getLocalName() + "-" + desiredCar + "-search";
         ACLMessage req = new ACLMessage(ACLMessage.REQUEST);
         req.addReceiver(new AID("broker", AID.ISLOCALNAME));
-        req.setContent(desiredCar);
+        req.setOntology("BUYER_SEARCH");
+        req.setContent(searchId + ";" + desiredCar);
         send(req);
     }
 
-    private void startNegotiationWithDealer() {
-        if (currentDealerIdx < dealers.size()) {
-            DealerOption dealer = dealers.get(currentDealerIdx);
-            if (dealer.reservePrice > maxBudget) {
-                log("STATUS: Skipping " + dealer.name + " because reserve RM" + dealer.reservePrice
-                        + " exceeds buyer budget.");
-                currentDealerIdx++;
-                startNegotiationWithDealer();
-                return;
+    // ── Handlers ──────────────────────────────────────────────────────────────
+
+    private void handleCycleUpdate(ACLMessage msg) {
+        int currentCycle = Integer.parseInt(msg.getContent());
+        if (startCycle == -1) startCycle = currentCycle;
+
+        int t = Math.min(currentCycle - startCycle, config.getDeadlineCycles());
+        NegotiationConfig.Strategy effective = config.getEffectiveStrategy(t);
+        if (effective != activeStrategy) {
+            activeStrategy = effective;
+            log("STATUS: Strategy shifted to " + activeStrategy + " at local cycle " + t);
+        }
+        double concession = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
+        currentWillingOffer = (int)(initialOffer + ((maxBudget - initialOffer) * concession));
+        if (currentWillingOffer > maxBudget) currentWillingOffer = maxBudget;
+        log("Willing to pay RM" + currentWillingOffer + " for " + desiredCar);
+    }
+
+    /**
+     * BROKER_SHORTLIST: "searchSessionId;dealer1:price1:reserve1,dealer2:..."  or  "...;NONE"
+     * Parse shortlist, verify affordability, send BUYER_SHORTLIST to broker.
+     */
+    private void handleBrokerShortlist(ACLMessage msg) {
+        // Content: "{searchId};{dealerCsv}"  where dealerCsv may be "NONE"
+        String content = msg.getContent();
+        int    sep     = content.indexOf(';');
+        String dealerCsv = sep >= 0 ? content.substring(sep + 1) : content;
+
+        if ("NONE".equals(dealerCsv)) {
+            searchRetries++;
+            if (searchRetries > config.getMaxSearchRetries()) {
+                log("STATUS: No matching car after " + config.getMaxSearchRetries() + " retries. Ending.");
+                sendWalkaway(null, "NO_MATCHING_CAR");
+                triggerMarketAction();
+                doDelete();
+            } else {
+                log("STATUS: No dealers for " + desiredCar + ". Retry " + searchRetries
+                        + "/" + config.getMaxSearchRetries());
+                addBehaviour(new WakerBehaviour(this, 1500) {
+                    @Override protected void onWake() { searchBroker(); }
+                });
             }
-            negotiationRound = 0;
-            ACLMessage start = new ACLMessage(ACLMessage.PROPOSE);
-            start.addReceiver(new AID(dealer.name, AID.ISLOCALNAME));
-//            start.setContent(String.valueOf((int)(maxBudget * 0.7))); // Start at 70% of budget
-            start.setContent(String.valueOf(currentWillingOffer));
-            send(start);
-            // If dealer doesn't respond within a short timeout, move to next dealer
-            final DealerOption pending = dealer;
-            addBehaviour(new WakerBehaviour(this, 1500) {
-                protected void onWake() {
-                    if (dealFound) return;
-                    if (currentDealerIdx < dealers.size() && dealers.get(currentDealerIdx).name.equals(pending.name)
-                            && negotiationRound == 0) {
-                        log("STATUS: No response from " + pending.name + ". Moving to next dealer...");
-                        currentDealerIdx++;
-                        startNegotiationWithDealer();
-                    }
+            return;
+        }
+
+        dealers.clear();
+        for (String entry : dealerCsv.split(",")) {
+            if (entry.isEmpty()) continue;
+            String[] p = entry.split(":");
+            int listed  = p.length > 1 ? Integer.parseInt(p[1]) : maxBudget;
+            int reserve = p.length > 2 ? Integer.parseInt(p[2]) : listed;
+            dealers.add(new DealerOption(p[0], listed, reserve));
+        }
+
+        // Check at least one dealer is affordable
+        boolean anyAffordable = dealers.stream().anyMatch(d -> d.reservePrice <= maxBudget);
+        if (!anyAffordable) {
+            log("STATUS: All dealers' reserve prices exceed budget RM" + maxBudget + ". Ending.");
+            sendWalkaway(null, "BUDGET_TOO_LOW");
+            triggerMarketAction();
+            doDelete();
+            return;
+        }
+
+        searchRetries = 0;
+        currentDealerIdx = 0;
+        dealerAttemptIndex = 0;
+        
+        if (isManualStrategy) {
+            log("STATUS: Manual Shortlist Phase. Waiting for user input...");
+            StringBuilder sb = new StringBuilder();
+            for (DealerOption d : dealers) {
+                if (d.reservePrice <= maxBudget) {
+                    if (sb.length() > 0) sb.append(",");
+                    sb.append(d.name).append(":").append(d.listedPrice).append(":").append(d.reservePrice);
                 }
-            });
-            log("NEGOTIATION: Starting with " + dealer.name + " @ RM" + currentWillingOffer);
-        } else {
+            }
+            log("[MANUAL_PROMPT] SHORTLIST:" + sb.toString());
+            return;
+        }
+
+        log("STATUS: Shortlist received — " + dealers.size() + " dealer(s). Starting negotiations...");
+        submitShortlistToBroker();
+    }
+
+    /**
+     * Pick the current dealer (skip if unaffordable), generate a new sessionId,
+     * and send BUYER_SHORTLIST to broker.
+     */
+    private void submitShortlistToBroker() {
+        // Skip dealers whose reserve price exceeds budget
+        while (currentDealerIdx < dealers.size()
+                && dealers.get(currentDealerIdx).reservePrice > maxBudget) {
+            log("STATUS: Skipping " + dealers.get(currentDealerIdx).name
+                    + " (reserve RM" + dealers.get(currentDealerIdx).reservePrice + " > budget)");
+            currentDealerIdx++;
+        }
+
+        if (currentDealerIdx >= dealers.size()) {
             if (!dealFound) {
-                log("STATUS: All negotiations exhausted. No deal reached.");
-                notifyBrokerNoDeal("MAX_ROUNDS_REACHED");
+                log("STATUS: All dealers exhausted. No deal reached.");
+                sendWalkaway(null, "MAX_ROUNDS_REACHED");
                 triggerMarketAction();
                 doDelete();
             }
+            return;
         }
+
+        DealerOption dealer = dealers.get(currentDealerIdx);
+        negotiationRound = 0;
+        activeSessionId  = getLocalName() + "-" + desiredCar + "-" + dealerAttemptIndex;
+
+        // Content: "sessionId;dealerName;firstOffer;buyerReserve;carModel"
+        ACLMessage shortlist = new ACLMessage(ACLMessage.PROPOSE);
+        shortlist.addReceiver(new AID("broker", AID.ISLOCALNAME));
+        shortlist.setOntology("BUYER_SHORTLIST");
+        shortlist.setContent(activeSessionId + ";" + dealer.name + ";"
+                + currentWillingOffer + ";" + maxBudget + ";" + desiredCar);
+        
+        addBehaviour(new WakerBehaviour(this, 400) {
+            @Override
+            protected void onWake() {
+                send(shortlist);
+            }
+        });
+
+        log("NEGOTIATION: Starting with " + dealer.name + " [session=" + activeSessionId
+                + "] @ RM" + currentWillingOffer);
     }
 
-    private void handleCounterOffer(ACLMessage msg) {
-        int counter = Integer.parseInt(msg.getContent());
-        String senderDealer = msg.getSender().getLocalName();
+    /**
+     * BROKER_RELAY_COUNTER: "sessionId;dealerName;counterPrice"
+     * The broker has relayed the dealer's counter-offer to us.
+     */
+    private void handleBrokerRelayCounter(ACLMessage msg) {
+        String[] p   = msg.getContent().split(";");
+        String sid   = p[0];
+        // p[1] = dealerName
+        int counter  = Integer.parseInt(p[2]);
         negotiationRound++;
 
-        log("OFFER: " + senderDealer + " counter-offered RM" + counter + " (Round " + negotiationRound + ")");
+        log("OFFER: [" + sid + "] Dealer counter-offered RM" + counter
+                + " (Round " + negotiationRound + ")");
 
-        // Track best offer
-        if (counter < bestPriceReceived) {
-            bestPriceReceived = counter;
-            bestDealerName = senderDealer;
+        if (isManualStrategy) {
+            log("[MANUAL_PROMPT] COUNTER:" + p[1] + ":" + counter);
+            return;
         }
 
         if (counter <= currentWillingOffer) {
-            ACLMessage propose = msg.createReply();
-            propose.setPerformative(ACLMessage.PROPOSE);
-            propose.setContent(String.valueOf(counter));
-            send(propose);
-            log("AGREED: Target met! Sending final proposal for RM" + counter);
+            // Deal! Send agreeing counter back via broker (broker will forward to dealer)
+            sendBuyerCounter(sid, counter);
+            log("AGREED: Counter RM" + counter + " is within budget. Sending final offer.");
+            // Note: the actual deal confirmation comes from DEALER_ACCEPT → BROKER_RELAY_ACCEPT
         } else if (negotiationRound < config.getMaxRoundsPerDealer()) {
+            // Acceleration if stuck
             if (negotiationRound >= config.getStuckRoundsBeforeAcceleration()) {
                 currentWillingOffer = Math.min(maxBudget,
                         currentWillingOffer + Math.max(1, (maxBudget - currentWillingOffer) / 2));
-                log("STATUS: Negotiation dragging. Accelerated buyer offer to RM" + currentWillingOffer);
+                log("STATUS: Negotiation dragging. Accelerated offer to RM" + currentWillingOffer);
             }
-            ACLMessage propose = msg.createReply();
-            propose.setPerformative(ACLMessage.PROPOSE);
-            propose.setContent(String.valueOf(currentWillingOffer));
-            send(propose);
-            log("COUNTER: Standing firm at RM" + currentWillingOffer);
-
+            sendBuyerCounter(sid, currentWillingOffer);
+            log("COUNTER: Sent RM" + currentWillingOffer + " to broker.");
             triggerMarketAction();
         } else {
-            log("STATUS: Max rounds reached with " + senderDealer + ". Moving to next dealer...");
+            // Walk away from this dealer, try next
+            log("STATUS: Max rounds reached on " + sid + ". Moving to next dealer...");
+            sendWalkaway(sid, "MAX_ROUNDS_REACHED");
             currentDealerIdx++;
-            startNegotiationWithDealer();
+            dealerAttemptIndex++;
+            submitShortlistToBroker();
         }
     }
 
-    private void notifyBroker(String finalPrice, String dealerName) {
-        ACLMessage confirm = new ACLMessage(ACLMessage.CONFIRM);
-        confirm.addReceiver(new AID("broker", AID.ISLOCALNAME));
-        confirm.setContent(finalPrice + ";" + dealerName + ";" + desiredCar + ";" + negotiationRound);
-        send(confirm);
+    /**
+     * BROKER_RELAY_ACCEPT: "sessionId;dealerName;agreedPrice"
+     * The deal is confirmed by the broker (dealer already accepted).
+     */
+    private void handleBrokerRelayAccept(ACLMessage msg) {
+        String[] p   = msg.getContent().split(";");
+        // p[0]=sessionId, p[1]=dealerName
+        int agreedPrice = Integer.parseInt(p[2]);
+        log("SUCCESS! Purchased " + desiredCar + " for RM" + agreedPrice
+                + " from " + p[1] + " [session=" + p[0] + "]");
+        dealFound = true;
+        triggerMarketAction();
+        doDelete();
     }
 
-    private void notifyBrokerNoDeal(String reason) {
-        ACLMessage confirm = new ACLMessage(ACLMessage.CONFIRM);
-        confirm.addReceiver(new AID("broker", AID.ISLOCALNAME));
-        confirm.setContent("NO_DEAL;" + reason + ";" + desiredCar + ";" + maxBudget);
-        send(confirm);
+    /**
+     * BROKER_RELAY_SOLD_OUT: "sessionId;dealerName"
+     * The dealer went out of stock mid-negotiation.
+     * Advance to the next dealer in the shortlist immediately.
+     */
+    private void handleBrokerRelaySoldOut(ACLMessage msg) {
+        String[] p      = msg.getContent().split(";", 2);
+        String sessionId = p[0];
+        String dealer   = p.length > 1 ? p[1] : "?";
+        log("STATUS: Dealer " + dealer + " sold out [session=" + sessionId + "]. Trying next dealer...");
+        currentDealerIdx++;
+        dealerAttemptIndex++;
+        submitShortlistToBroker();
+    }
+
+    // ── Outbound helpers ──────────────────────────────────────────────────────
+
+    /** Send BUYER_COUNTER (PROPOSE / BUYER_COUNTER) to broker */
+    private void sendBuyerCounter(String sessionId, int offer) {
+        ACLMessage counter = new ACLMessage(ACLMessage.PROPOSE);
+        counter.addReceiver(new AID("broker", AID.ISLOCALNAME));
+        counter.setOntology("BUYER_COUNTER");
+        counter.setContent(sessionId + ";" + offer);
+        
+        addBehaviour(new WakerBehaviour(this, 600) {
+            @Override
+            protected void onWake() {
+                send(counter);
+            }
+        });
+    }
+
+    /** Send BUYER_WALKAWAY (FAILURE / BUYER_WALKAWAY) to broker */
+    private void sendWalkaway(String sessionId, String reason) {
+        if (sessionId == null) return;  // no active session to close
+        ACLMessage walkaway = new ACLMessage(ACLMessage.FAILURE);
+        walkaway.addReceiver(new AID("broker", AID.ISLOCALNAME));
+        walkaway.setOntology("BUYER_WALKAWAY");
+        walkaway.setContent(sessionId + ";" + reason);
+        send(walkaway);
     }
 
     private void triggerMarketAction() {
-        ACLMessage actionMsg = new ACLMessage(ACLMessage.INFORM);
-        actionMsg.setOntology("ACTION_COMPLETED");
-        actionMsg.addReceiver(new AID("space", AID.ISLOCALNAME));
-        send(actionMsg);
+        ACLMessage action = new ACLMessage(ACLMessage.INFORM);
+        action.setOntology("ACTION_COMPLETED");
+        action.addReceiver(new AID("space", AID.ISLOCALNAME));
+        send(action);
     }
 
-    //Ignore Inactive Agent so that the cycle continue
+    private void handleManualAction(ACLMessage msg) {
+        String content = msg.getContent();
+        if (content == null || content.isEmpty()) return;
+        
+        String[] parts = content.split(";");
+        String action = parts[0];
+        
+        if ("SHORTLIST".equals(action) && parts.length >= 3) {
+            String dealerName = parts[1];
+            int firstOffer = Integer.parseInt(parts[2]);
+            
+            activeSessionId = getLocalName() + "-" + desiredCar + "-" + dealerAttemptIndex;
+            ACLMessage prop = new ACLMessage(ACLMessage.PROPOSE);
+            prop.addReceiver(new AID("broker", AID.ISLOCALNAME));
+            prop.setOntology("BUYER_SHORTLIST");
+            prop.setContent(activeSessionId + ";" + dealerName + ";" + firstOffer + ";" + maxBudget + ";" + desiredCar);
+            send(prop);
+            
+            log("MANUAL: Sent first offer RM" + firstOffer + " to " + dealerName);
+            
+        } else if ("COUNTER".equals(action) && parts.length >= 2) {
+            int price = Integer.parseInt(parts[1]);
+            ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
+            counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
+            counterMsg.setOntology("BUYER_COUNTER");
+            counterMsg.setContent(activeSessionId + ";" + price);
+            send(counterMsg);
+            log("MANUAL: Sent counter offer RM" + price);
+            
+        } else if ("ACCEPT".equals(action) && parts.length >= 2) {
+            int price = Integer.parseInt(parts[1]);
+            ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
+            counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
+            counterMsg.setOntology("BUYER_COUNTER");
+            counterMsg.setContent(activeSessionId + ";" + price);
+            send(counterMsg);
+            log("MANUAL: Sent acceptance price RM" + price);
+            
+        } else if ("WALKAWAY".equals(action)) {
+            sendWalkaway(activeSessionId, "MANUAL_WALKAWAY");
+            log("MANUAL: Walked away from negotiation.");
+            triggerMarketAction();
+            doDelete();
+        }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    @Override
     protected void takeDown() {
         ACLMessage dereg = new ACLMessage(ACLMessage.INFORM);
         dereg.setOntology("DEREGISTER");
@@ -308,9 +471,7 @@ public class BuyerAgent extends Agent {
     }
 
     private String strategySwitchText() {
-        if (config.getStrategySwitchCycle() <= 0 || config.getSwitchStrategy() == config.getStrategy()) {
-            return "";
-        }
-        return " -> " + config.getSwitchStrategy() + " at cycle " + config.getStrategySwitchCycle();
+        if (config.getStrategySwitchCycle() <= 0 || config.getSwitchStrategy() == config.getStrategy()) return "";
+        return " → " + config.getSwitchStrategy() + " at cycle " + config.getStrategySwitchCycle();
     }
 }

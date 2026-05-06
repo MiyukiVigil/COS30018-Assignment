@@ -19,7 +19,11 @@ public class SpaceControl extends Agent {
     private int cycleCount = 0;
     private boolean isPaused = false;
     private boolean cycleAdvancePending = false;
-    private final long autoCycleDelayMs = 300;
+    /**
+     * Inter-cycle delay in milliseconds. Mutable so the UI slider can adjust it at
+     * runtime.
+     */
+    private long autoCycleDelayMs = 1000;
     private UILogger logger;
 
     protected void setup() {
@@ -29,7 +33,7 @@ public class SpaceControl extends Agent {
 
         log("Initializing Space Control");
 
-        //Add behavior to JADE
+        // Add behavior to JADE
         addBehaviour(
                 new CyclicBehaviour() {
                     public void action() {
@@ -46,7 +50,7 @@ public class SpaceControl extends Agent {
                                 }
                             } else if ("DEREGISTER".equals(ontology)) {
                                 activeAgents.remove(msg.getSender());
-                                // ★ CHANGED: keep cycling after an agent deregisters if others are still active
+                                // keep cycling after an agent deregisters if others are still active
                                 if (!isPaused && !activeAgents.isEmpty()) {
                                     log("Agent left market. Continuing cycle for remaining agents.");
                                     scheduleCycleAdvance();
@@ -72,13 +76,22 @@ public class SpaceControl extends Agent {
                                     cycleAdvancePending = false;
                                     broadcastCycle(1);
                                 }
+                            } else if ("SET_SPEED".equals(ontology)) {
+                                try {
+                                    long newDelay = Long.parseLong(msg.getContent().trim());
+                                    if (newDelay >= 50) {
+                                        autoCycleDelayMs = newDelay;
+                                        log("Cycle delay set to " + autoCycleDelayMs + " ms.");
+                                    }
+                                } catch (NumberFormatException ignored) {
+                                    log("SET_SPEED: invalid content '" + msg.getContent() + "' — ignored.");
+                                }
                             }
                         } else {
                             block();
                         }
                     }
-                }
-        );
+                });
     }
 
     private void scheduleCycleAdvance() {
