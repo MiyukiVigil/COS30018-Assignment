@@ -182,11 +182,15 @@ public class BrokerAgent extends Agent {
                 sessionId, buyerName, dealerName, carModel, firstOffer, buyerReserve);
         sessions.put(sessionId, session);
 
+        int dealerReserve = lookupDealerReserve(dealerName, carModel);
+
         // Charge fixed fee at session start
         totalRevenue += FIXED_FEE;
         session.feeCharged = true;
         log("SESSION START: " + sessionId + " | Buyer=" + buyerName
-                + " | Dealer=" + dealerName + " | Car=" + carModel + " | FirstOffer=RM" + firstOffer);
+            + " | Dealer=" + dealerName + " | Car=" + carModel + " | FirstOffer=RM" + firstOffer
+            + " | BuyerReserve=RM" + buyerReserve
+            + (dealerReserve > 0 ? " | DealerReserve=RM" + dealerReserve : ""));
         log("FEE CHARGED: RM" + (int) FIXED_FEE + " | Running Revenue: RM" + (int) totalRevenue);
 
         // Invite dealer with buyer's first offer
@@ -336,6 +340,15 @@ public class BrokerAgent extends Agent {
                 return;
             }
         }
+    }
+
+    private int lookupDealerReserve(String dealerName, String carModel) {
+        for (CarListing cl : inventory) {
+            if (cl.dealer.equals(dealerName) && cl.model.equalsIgnoreCase(carModel)) {
+                return cl.reservePrice;
+            }
+        }
+        return -1;
     }
 
     private void logPerformanceMetrics() {

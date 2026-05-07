@@ -65,7 +65,23 @@ public class MainUI extends Application {
     private Label updateBuyerStatus = new Label();
     private int currentCycle = 0;
     private Map<String, XYChart.Series<Number, Number>> seriesMap = new HashMap<>();
+    private final Map<String, SessionMeta> sessionMetaMap = new HashMap<>();
+    private final Map<String, List<TrajectoryPoint>> sessionPoints = new HashMap<>();
+    private final Map<String, List<TrajectoryPoint>> agentPoints = new HashMap<>();
+    private final Map<String, Double> sessionLastPrice = new HashMap<>();
     private LineChart<Number, Number> priceChart;
+    private final List<LineChart<Number, Number>> activeCharts = new ArrayList<>();
+    private ComboBox<String> chartModeSelect;
+    private ComboBox<String> chartAgentSelect;
+    private ComboBox<String> chartSessionSelect;
+    private ComboBox<String> chartCarFilter;
+    private CheckBox chartMarkersToggle;
+    private CheckBox chartBaselinesToggle;
+    private CheckBox chartAllHistoryToggle;
+    private Slider chartHistorySlider;
+    private Label chartHistoryLabel;
+    private TrajectoryMode chartMode = TrajectoryMode.MARKET;
+    private int chartHistoryLimit = 60;
     private Button playPauseBtn;
     private boolean isAutoPlay = true;
     private ComboBox<String> strategyChoice;
@@ -109,21 +125,24 @@ public class MainUI extends Application {
     private final AtomicLong demoScenarioCounter = new AtomicLong();
     private static final Pattern RM_AMOUNT_PATTERN = Pattern.compile("RM\\s*(\\d+)");
 
-    // Modern Color Palette
-    private static final String PRIMARY_BLUE = "#1e40af";
-    private static final String ACCENT_BLUE = "#3b82f6";
-    private static final String SUCCESS_GREEN = "#10b981";
-    private static final String WARNING_ORANGE = "#f59e0b";
-    private static final String ERROR_RED = "#ef4444";
-    private static final String LIGHT_GRAY = "#f5f7fb";
-    private static final String DARK_TEXT = "#1f2937";
-    private static final String TEXT_MUTED = "#64748b";
+    // Minimalist Neutral Palette
+    private static final String PRIMARY_BLUE = "#111827";
+    private static final String ACCENT_BLUE = "#334155";
+    private static final String SUCCESS_GREEN = "#16a34a";
+    private static final String WARNING_ORANGE = "#d97706";
+    private static final String ERROR_RED = "#dc2626";
+    private static final String LIGHT_GRAY = "#f3f4f6";
+    private static final String DARK_TEXT = "#111827";
+    private static final String TEXT_MUTED = "#6b7280";
     private static final String SURFACE = "#ffffff";
-    private static final String SURFACE_ALT = "#f8fafc";
-    private static final String BORDER_SUBTLE = "#e2e8f0";
+    private static final String SURFACE_ALT = "#f9fafb";
+    private static final String BORDER_SUBTLE = "#e5e7eb";
     private static final String FONT_FAMILY = "'Poppins', 'Segoe UI', Arial";
     private static final String FONT_WEIGHT_MEDIUM = "500";
-    private static final String SOFT_SHADOW = "dropshadow(gaussian, rgba(15,23,42,0.08), 12, 0, 0, 3)";
+    private static final String SOFT_SHADOW = "dropshadow(gaussian, rgba(15,23,42,0.06), 12, 0, 0, 3)";
+    private static final String ALL_AGENTS = "All agents";
+    private static final String ALL_SESSIONS = "All sessions";
+    private static final String ALL_CARS = "All cars";
 
     // Popular Car Models Database
     private static final String[] CAR_MODELS = {
@@ -140,6 +159,54 @@ public class MainUI extends Application {
             "Ford EcoSport", "Ford Ranger", "Ford Everest",
             "Suzuki Swift", "Suzuki Ertiga", "Suzuki Vitara"
     };
+
+    private enum TrajectoryMode {
+        AGENT,
+        SESSION,
+        MARKET
+    }
+
+    private enum TrajectoryEvent {
+        START,
+        OFFER,
+        COUNTER,
+        ACCEPT,
+        WALKAWAY,
+        PRICE_UPDATE
+    }
+
+    private static class TrajectoryPoint {
+        private final int cycle;
+        private final double price;
+        private final String agent;
+        private final String sessionId;
+        private final String car;
+        private final TrajectoryEvent event;
+
+        private TrajectoryPoint(int cycle, double price, String agent, String sessionId, String car,
+                TrajectoryEvent event) {
+            this.cycle = cycle;
+            this.price = price;
+            this.agent = agent;
+            this.sessionId = sessionId;
+            this.car = car;
+            this.event = event;
+        }
+    }
+
+    private static class SessionMeta {
+        private final String sessionId;
+        private String buyer;
+        private String dealer;
+        private String car;
+        private Integer buyerReserve;
+        private Integer dealerReserve;
+        private Integer firstOffer;
+
+        private SessionMeta(String sessionId) {
+            this.sessionId = sessionId;
+        }
+    }
 
     public static void main(String[] args) {
         launch(args);
@@ -173,6 +240,9 @@ public class MainUI extends Application {
                     msg.contains("Willing to pay") ||
                     msg.contains("DEAL CLOSED") ||
                     msg.contains("SUCCESS!"));
+            boolean isTrajectoryEvent = isSessionStart || isDealSettled || isNoDeal
+                    || msg.contains("[BROKER] RELAY COUNTER") || msg.contains("[BROKER] RELAY OFFER")
+                    || isPriceUpdate;
             boolean isNegotiationAction = isDealSettled || isNoDeal || isRelay || isPriceUpdate
                     || msg.contains("STATUS:") || msg.contains("AGREED") || msg.contains("NEGOTIATION:");
 
@@ -268,8 +338,8 @@ public class MainUI extends Application {
                     }
                 }
 
-                if (isPriceUpdate) {
-                    updatePriceChart(msg);
+                if (isTrajectoryEvent) {
+                    ingestTrajectoryEvent(msg);
                 }
             });
         };
@@ -290,50 +360,242 @@ public class MainUI extends Application {
         stage.show();
     }
 
-    private void updatePriceChart(String msg) {
+    private void ingestTrajectoryEvent(String msg) {
         try {
-            // Extract agent name robustly: look for leading token before ':'
-            int colon = msg.indexOf(":");
-            if (colon <= 0)
+            SessionMeta meta = parseSessionStart(msg);
+            if (meta != null) {
+                sessionMetaMap.put(meta.sessionId, meta);
+                refreshTrajectoryFilters();
+                if (meta.firstOffer != null) {
+                    TrajectoryPoint point = new TrajectoryPoint(currentCycle, meta.firstOffer, meta.buyer,
+                            meta.sessionId, meta.car, TrajectoryEvent.START);
+                    storeTrajectoryPoint(point);
+                }
+                refreshTrajectoryChart();
                 return;
-            String agentName = msg.substring(0, colon).trim();
+            }
 
-            // Only plot known buyer/dealer agents to avoid noise from broker/UI messages
-            boolean knownAgent = false;
-            synchronized (dealerAgents) {
-                if (dealerAgents.contains(agentName))
-                    knownAgent = true;
-            }
-            synchronized (buyerAgents) {
-                if (buyerAgents.contains(agentName))
-                    knownAgent = true;
-            }
-            if (!knownAgent)
+            TrajectoryPoint brokerPoint = parseBrokerTrajectoryPoint(msg);
+            if (brokerPoint != null) {
+                storeTrajectoryPoint(brokerPoint);
+                refreshTrajectoryChart();
                 return;
-
-            Matcher matcher = RM_AMOUNT_PATTERN.matcher(msg);
-            Double amount = null;
-            while (matcher.find()) {
-                amount = Double.parseDouble(matcher.group(1));
             }
-            if (amount == null)
-                return;
 
-            XYChart.Series<Number, Number> series = seriesMap.computeIfAbsent(agentName, k -> {
-                XYChart.Series<Number, Number> s = new XYChart.Series<>();
-                s.setName(k);
-                if (priceChart != null)
-                    priceChart.getData().add(s);
-                return s;
-            });
-
-            series.getData().add(new XYChart.Data<>(currentCycle, amount));
-            if (series.getData().size() > 50) {
-                series.getData().remove(0);
+            TrajectoryPoint agentPoint = parseAgentPricePoint(msg);
+            if (agentPoint != null) {
+                storeTrajectoryPoint(agentPoint);
+                refreshTrajectoryChart();
             }
         } catch (Exception e) {
-            System.err.println("Chart update error: " + e.getMessage());
+            System.err.println("Trajectory ingest error: " + e.getMessage());
         }
+    }
+
+    private void storeTrajectoryPoint(TrajectoryPoint point) {
+        if (point.sessionId != null) {
+            sessionPoints.computeIfAbsent(point.sessionId, k -> new ArrayList<>()).add(point);
+            sessionLastPrice.put(point.sessionId, point.price);
+        }
+        if (point.agent != null && !point.agent.isEmpty()) {
+            agentPoints.computeIfAbsent(point.agent, k -> new ArrayList<>()).add(point);
+        }
+    }
+
+    private SessionMeta parseSessionStart(String msg) {
+        int idx = msg.indexOf("SESSION START:");
+        if (idx < 0)
+            return null;
+        String payload = msg.substring(idx + "SESSION START:".length()).trim();
+        String[] parts = payload.split("\\|");
+        if (parts.length == 0)
+            return null;
+        String sessionId = parts[0].trim();
+        if (sessionId.isEmpty())
+            return null;
+
+        SessionMeta meta = new SessionMeta(sessionId);
+        for (int i = 1; i < parts.length; i++) {
+            String segment = parts[i].trim();
+            int eq = segment.indexOf('=');
+            if (eq < 0)
+                continue;
+            String key = segment.substring(0, eq).trim();
+            String value = segment.substring(eq + 1).trim();
+            if ("Buyer".equals(key)) {
+                meta.buyer = value;
+            } else if ("Dealer".equals(key)) {
+                meta.dealer = value;
+            } else if ("Car".equals(key)) {
+                meta.car = value;
+            } else if ("FirstOffer".equals(key)) {
+                meta.firstOffer = parseMoneyValue(value);
+            } else if ("BuyerReserve".equals(key)) {
+                meta.buyerReserve = parseMoneyValue(value);
+            } else if ("DealerReserve".equals(key)) {
+                meta.dealerReserve = parseMoneyValue(value);
+            }
+        }
+        return meta;
+    }
+
+    private TrajectoryPoint parseBrokerTrajectoryPoint(String msg) {
+        if (!msg.contains("[BROKER]"))
+            return null;
+
+        if (msg.contains("RELAY COUNTER:")) {
+            String payload = msg.substring(msg.indexOf("RELAY COUNTER:") + 14).trim();
+            String sessionId = extractSessionId(payload);
+            Integer price = extractLastMoneyValue(payload);
+            if (sessionId == null || price == null)
+                return null;
+            SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
+            hydrateSessionMeta(meta, payload);
+            return new TrajectoryPoint(currentCycle, price, meta.dealer, sessionId, meta.car,
+                    TrajectoryEvent.COUNTER);
+        }
+
+        if (msg.contains("RELAY OFFER:")) {
+            String payload = msg.substring(msg.indexOf("RELAY OFFER:") + 12).trim();
+            String sessionId = extractSessionId(payload);
+            Integer price = extractLastMoneyValue(payload);
+            if (sessionId == null || price == null)
+                return null;
+            SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
+            hydrateSessionMeta(meta, payload);
+            return new TrajectoryPoint(currentCycle, price, meta.buyer, sessionId, meta.car,
+                    TrajectoryEvent.OFFER);
+        }
+
+        if (msg.contains("DEAL SETTLED:")) {
+            String payload = msg.substring(msg.indexOf("DEAL SETTLED:") + 13).trim();
+            String sessionId = extractSessionId(payload);
+
+            Integer price = null;
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Price=RM\\s*(\\d+)").matcher(payload);
+            if (m.find()) {
+                price = Integer.parseInt(m.group(1));
+            } else {
+                price = extractLastMoneyValue(payload);
+            }
+
+            if (sessionId == null || price == null)
+                return null;
+            SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
+            hydrateSessionMeta(meta, payload);
+            return new TrajectoryPoint(currentCycle, price, meta.dealer, sessionId, meta.car,
+                    TrajectoryEvent.ACCEPT);
+        }
+
+        if (msg.contains("NO DEAL:")) {
+            String payload = msg.substring(msg.indexOf("NO DEAL:") + 8).trim();
+            String sessionId = extractSessionId(payload);
+            if (sessionId == null)
+                return null;
+            SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
+            hydrateSessionMeta(meta, payload);
+            Double lastPrice = sessionLastPrice.get(sessionId);
+            if (lastPrice == null)
+                return null;
+            return new TrajectoryPoint(currentCycle, lastPrice, meta.buyer, sessionId, meta.car,
+                    TrajectoryEvent.WALKAWAY);
+        }
+
+        return null;
+    }
+
+    private TrajectoryPoint parseAgentPricePoint(String msg) {
+        if (!msg.contains(":") || !msg.contains("RM"))
+            return null;
+        if (!(msg.contains("Price updated") || msg.contains("Willing to pay")))
+            return null;
+
+        int colon = msg.indexOf(":");
+        if (colon <= 0)
+            return null;
+        String agentName = msg.substring(0, colon).trim();
+        boolean knownAgent = false;
+        synchronized (dealerAgents) {
+            if (dealerAgents.contains(agentName))
+                knownAgent = true;
+        }
+        synchronized (buyerAgents) {
+            if (buyerAgents.contains(agentName))
+                knownAgent = true;
+        }
+        if (!knownAgent)
+            return null;
+
+        Integer price = extractLastMoneyValue(msg);
+        if (price == null)
+            return null;
+
+        String car = null;
+        int forIdx = msg.indexOf(" for ");
+        if (forIdx >= 0) {
+            car = msg.substring(forIdx + 5).trim();
+            int cut = car.indexOf(" (");
+            if (cut >= 0) {
+                car = car.substring(0, cut).trim();
+            }
+        }
+
+        return new TrajectoryPoint(currentCycle, price, agentName, null, car, TrajectoryEvent.PRICE_UPDATE);
+    }
+
+    private void hydrateSessionMeta(SessionMeta meta, String payload) {
+        String[] segments = payload.split("\\|");
+        for (String segment : segments) {
+            String seg = segment.trim();
+            if (seg.startsWith("Buyer=")) {
+                meta.buyer = seg.substring(6).trim();
+            }
+            if (seg.contains("Buyer=")) {
+                int idx = seg.indexOf("Buyer=");
+                String buyer = seg.substring(idx + 6).trim();
+                if (buyer.contains("→")) {
+                    buyer = buyer.substring(buyer.indexOf("→") + 1).trim();
+                } else if (buyer.contains("->")) {
+                    buyer = buyer.substring(buyer.indexOf("->") + 2).trim();
+                }
+                meta.buyer = buyer;
+            }
+            if (seg.startsWith("Dealer=")) {
+                String dealer = seg.substring(7).trim();
+                if (dealer.contains("→")) {
+                    dealer = dealer.substring(0, dealer.indexOf("→")).trim();
+                } else if (dealer.contains("->")) {
+                    dealer = dealer.substring(0, dealer.indexOf("->")).trim();
+                }
+                meta.dealer = dealer;
+            }
+            if (seg.startsWith("Car=")) {
+                meta.car = seg.substring(4).trim();
+            }
+        }
+    }
+
+    private String extractSessionId(String payload) {
+        int pipe = payload.indexOf('|');
+        String raw = pipe >= 0 ? payload.substring(0, pipe).trim() : payload.trim();
+        return raw.isEmpty() ? null : raw;
+    }
+
+    private Integer parseMoneyValue(String value) {
+        Matcher matcher = RM_AMOUNT_PATTERN.matcher(value);
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        return null;
+    }
+
+    private Integer extractLastMoneyValue(String payload) {
+        Matcher matcher = RM_AMOUNT_PATTERN.matcher(payload);
+        Integer amount = null;
+        while (matcher.find()) {
+            amount = Integer.parseInt(matcher.group(1));
+        }
+        return amount;
     }
 
     private void loadFonts() {
@@ -360,21 +622,21 @@ public class MainUI extends Application {
         tp.setStyle("-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; "
                 + "-fx-background-color: transparent; -fx-tab-min-height: 40; -fx-tab-max-height: 40;");
 
-        Tab dashboardTab = new Tab("📊 Dashboard", createBrokerView());
+        Tab dashboardTab = new Tab("Dashboard", createBrokerView());
         dashboardTab.setClosable(false);
-        Tab buyerTab = new Tab("🧑 Buyer Portal", createBuyerView(logger));
+        Tab buyerTab = new Tab("Buyer Portal", createBuyerView(logger));
         buyerTab.setClosable(false);
-        Tab dealerTab = new Tab("🚗 Dealer Portal", createDealerView(logger));
+        Tab dealerTab = new Tab("Dealer Portal", createDealerView(logger));
         dealerTab.setClosable(false);
-        Tab manualTab = new Tab("🎮 Manual Mode", createManualPlayView());
+        Tab manualTab = new Tab("Manual Mode", createManualPlayView());
         manualTab.setClosable(false);
-        Tab sessionsTab = new Tab("🔁 Sessions", createSessionsView());
+        Tab sessionsTab = new Tab("Sessions", createSessionsView());
         sessionsTab.setClosable(false);
-        Tab analysisTab = new Tab("📈 Analytics", createMarketAnalysisView());
+        Tab analysisTab = new Tab("Analytics", createMarketAnalysisView());
         analysisTab.setClosable(false);
-        Tab failuresTab = new Tab("⚠️ Failures", createFailuresView());
+        Tab failuresTab = new Tab("Failures", createFailuresView());
         failuresTab.setClosable(false);
-        Tab logTab = new Tab("📋 Activity Log", createActivityLogView());
+        Tab logTab = new Tab("Activity Log", createActivityLogView());
         logTab.setClosable(false);
         tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, manualTab, sessionsTab, analysisTab, failuresTab,
                 logTab);
@@ -556,10 +818,11 @@ public class MainUI extends Application {
         priceChart = new LineChart<>(xAxis, yAxis);
         priceChart.setAnimated(false);
         priceChart.setTitle(null);
+        priceChart.setLegendVisible(false);
         priceChart.setStyle("-fx-background-color: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
                 + "; -fx-border-width: 1; -fx-background-radius: 12; -fx-border-radius: 12;");
         priceChart.setMinHeight(280);
-        priceChart.getData().addAll(seriesMap.values());
+        activeCharts.add(priceChart);
         VBox.setVgrow(priceChart, Priority.ALWAYS);
 
         // Chart header row: title + expand button
@@ -583,15 +846,103 @@ public class MainUI extends Application {
         HBox chartHeaderRow = new HBox(8, chartTitleBox, chartHeaderSpacer, expandChartBtn);
         chartHeaderRow.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
 
-        VBox chartSection = new VBox(6, chartHeaderRow, priceChart);
+        String comboStyle = "-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; -fx-background-color: " + SURFACE
+                + "; -fx-border-color: " + BORDER_SUBTLE
+                + "; -fx-border-radius: 6; -fx-background-radius: 6; -fx-padding: 2 6;";
+
+        chartModeSelect = new ComboBox<>();
+        chartModeSelect.getItems().addAll("Market View", "Agent View", "Session View");
+        chartModeSelect.setValue("Market View");
+        chartModeSelect.setStyle(comboStyle);
+        chartModeSelect.setOnAction(e -> {
+            String val = chartModeSelect.getValue();
+            if (val.equals("Market View")) chartMode = TrajectoryMode.MARKET;
+            else if (val.equals("Session View")) chartMode = TrajectoryMode.SESSION;
+            else chartMode = TrajectoryMode.AGENT;
+            refreshTrajectoryFilters();
+            refreshTrajectoryChart();
+        });
+
+        chartAgentSelect = new ComboBox<>();
+        chartAgentSelect.getItems().add(ALL_AGENTS);
+        chartAgentSelect.setValue(ALL_AGENTS);
+        chartAgentSelect.setStyle(comboStyle);
+        chartAgentSelect.setOnAction(e -> refreshTrajectoryChart());
+
+        chartSessionSelect = new ComboBox<>();
+        chartSessionSelect.getItems().add(ALL_SESSIONS);
+        chartSessionSelect.setValue(ALL_SESSIONS);
+        chartSessionSelect.setStyle(comboStyle);
+        chartSessionSelect.setOnAction(e -> refreshTrajectoryChart());
+
+        chartCarFilter = new ComboBox<>();
+        chartCarFilter.getItems().add(ALL_CARS);
+        chartCarFilter.setValue(ALL_CARS);
+        chartCarFilter.setStyle(comboStyle);
+        chartCarFilter.setOnAction(e -> refreshTrajectoryChart());
+
+        String checkStyle = "-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: 500;";
+
+        chartMarkersToggle = new CheckBox("Show Markers");
+        chartMarkersToggle.setStyle(checkStyle);
+        chartMarkersToggle.setOnAction(e -> refreshTrajectoryChart());
+
+        chartBaselinesToggle = new CheckBox("Show Baselines");
+        chartBaselinesToggle.setStyle(checkStyle);
+        chartBaselinesToggle.setOnAction(e -> refreshTrajectoryChart());
+
+        chartAllHistoryToggle = new CheckBox("Full History");
+        chartAllHistoryToggle.setStyle(checkStyle);
+        chartAllHistoryToggle.setOnAction(e -> {
+            chartHistorySlider.setDisable(chartAllHistoryToggle.isSelected());
+            refreshTrajectoryChart();
+        });
+
+        chartHistorySlider = new Slider(10, 500, chartHistoryLimit);
+        chartHistorySlider.setPrefWidth(140);
+        chartHistorySlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            chartHistoryLimit = newVal.intValue();
+            chartHistoryLabel.setText("History Limit: " + chartHistoryLimit);
+            if (!chartHistorySlider.isValueChanging()) {
+                refreshTrajectoryChart();
+            }
+        });
+        chartHistorySlider.setOnMouseReleased(e -> refreshTrajectoryChart());
+        chartHistoryLabel = new Label("History Limit: " + chartHistoryLimit);
+        chartHistoryLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 500;");
+
+        Label modeLbl = new Label("Mode:");
+        modeLbl.setStyle(checkStyle);
+        Label agentLbl = new Label("Agent:");
+        agentLbl.setStyle(checkStyle);
+        Label sessionLbl = new Label("Session:");
+        sessionLbl.setStyle(checkStyle);
+        Label carLbl = new Label("Car:");
+        carLbl.setStyle(checkStyle);
+
+        HBox controlsRow1 = new HBox(12, modeLbl, chartModeSelect, agentLbl, chartAgentSelect, sessionLbl,
+                chartSessionSelect, carLbl, chartCarFilter);
+        controlsRow1.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        HBox controlsRow2 = new HBox(18, chartMarkersToggle, chartBaselinesToggle,
+                new Separator(javafx.geometry.Orientation.VERTICAL), chartHistoryLabel, chartHistorySlider,
+                chartAllHistoryToggle);
+        controlsRow2.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        VBox chartControlsBox = new VBox(12, controlsRow1, controlsRow2);
+        chartControlsBox.setPadding(new Insets(10, 10, 10, 10));
+        chartControlsBox
+                .setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8; -fx-border-color: "
+                        + BORDER_SUBTLE + "; -fx-border-radius: 8; -fx-border-width: 1;");
+
+        VBox chartSection = new VBox(6, chartHeaderRow, chartControlsBox, priceChart);
         chartSection.setPadding(new Insets(14));
         chartSection.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
                 + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
         VBox.setVgrow(chartSection, Priority.ALWAYS);
 
-        // ── Left column: stats + workflow guide ───────────────────────────────
-        VBox guide = buildWorkflowGuide();
-        VBox leftCol = new VBox(14, statsSection, guide);
+        // ── Left column: stats ───────────────────────────────
+        VBox leftCol = new VBox(14, statsSection);
         leftCol.setMinWidth(420);
         leftCol.setMaxWidth(520);
 
@@ -610,7 +961,6 @@ public class MainUI extends Application {
         Stage chartStage = new Stage();
         chartStage.setTitle("Negotiation Price Trajectory — Expanded View");
 
-        // Mirror axes so the detached chart can render independently
         NumberAxis x2 = new NumberAxis();
         x2.setLabel("Cycle");
         x2.setForceZeroInRange(false);
@@ -620,127 +970,28 @@ public class MainUI extends Application {
 
         LineChart<Number, Number> detachedChart = new LineChart<>(x2, y2);
         detachedChart.setAnimated(false);
-        detachedChart.setTitle("Negotiation Price Trajectory");
-        detachedChart.setStyle("-fx-background-color: white;");
+        detachedChart.setTitle(null);
+        detachedChart.setLegendVisible(false);
+        detachedChart.setStyle("-fx-background-color: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
+                + "; -fx-border-width: 1; -fx-background-radius: 12; -fx-border-radius: 12;");
 
-        // Duplicate series data into the detached chart (snapshot of current data)
-        for (XYChart.Series<Number, Number> src : seriesMap.values()) {
-            XYChart.Series<Number, Number> copy = new XYChart.Series<>();
-            copy.setName(src.getName());
-            for (XYChart.Data<Number, Number> d : src.getData()) {
-                copy.getData().add(new XYChart.Data<>(d.getXValue(), d.getYValue()));
-            }
-            detachedChart.getData().add(copy);
-        }
-
-        // Keep detached chart in sync: whenever seriesMap gets new data points,
-        // mirror them into the matching series in the detached chart.
-        priceChart.getData().addListener(
-                (javafx.collections.ListChangeListener<XYChart.Series<Number, Number>>) change -> {
-                    while (change.next()) {
-                        if (change.wasAdded()) {
-                            for (XYChart.Series<Number, Number> added : change.getAddedSubList()) {
-                                // Add a mirror series if not already present
-                                boolean found = detachedChart.getData().stream()
-                                        .anyMatch(s -> s.getName().equals(added.getName()));
-                                if (!found) {
-                                    XYChart.Series<Number, Number> mirror = new XYChart.Series<>();
-                                    mirror.setName(added.getName());
-                                    Platform.runLater(() -> detachedChart.getData().add(mirror));
-                                }
-                            }
-                        }
-                    }
-                });
-
-        // Periodically sync data from live seriesMap into detached chart series
-        javafx.animation.Timeline syncTimeline = new javafx.animation.Timeline(
-                new javafx.animation.KeyFrame(javafx.util.Duration.seconds(1), ae -> {
-                    for (XYChart.Series<Number, Number> src : seriesMap.values()) {
-                        detachedChart.getData().stream()
-                                .filter(s -> s.getName().equals(src.getName()))
-                                .findFirst()
-                                .ifPresent(mirror -> {
-                                    int srcSize = src.getData().size();
-                                    int mirrorSize = mirror.getData().size();
-                                    if (srcSize > mirrorSize) {
-                                        for (int i = mirrorSize; i < srcSize; i++) {
-                                            XYChart.Data<Number, Number> d = src.getData().get(i);
-                                            mirror.getData().add(
-                                                    new XYChart.Data<>(d.getXValue(), d.getYValue()));
-                                        }
-                                    }
-                                });
-                    }
-                }));
-        syncTimeline.setCycleCount(javafx.animation.Animation.INDEFINITE);
-        syncTimeline.play();
-        chartStage.setOnCloseRequest(e -> syncTimeline.stop());
+        activeCharts.add(detachedChart);
+        chartStage.setOnCloseRequest(e -> activeCharts.remove(detachedChart));
 
         Label hint = new Label(
-                "This window shows a live-synced copy of the price trajectory. "
-                        + "New data points are added every ~1 second.");
-        hint.setStyle("-fx-font-size: 11; -fx-text-fill: #64748b; -fx-padding: 0 0 6 0;");
+                "This expanded view instantly mirrors all filters and settings from the main dashboard chart.");
+        hint.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + "; -fx-padding: 0 0 10 0;");
 
-        VBox root = new VBox(6, hint, detachedChart);
-        root.setPadding(new Insets(16));
-        root.setStyle("-fx-background-color: #f5f7fb;");
+        VBox root = new VBox(10, hint, detachedChart);
+        root.setPadding(new Insets(20));
+        root.setStyle("-fx-background-color: " + SURFACE_ALT + ";");
         VBox.setVgrow(detachedChart, Priority.ALWAYS);
 
-        Scene scene = new Scene(root, 900, 600);
+        Scene scene = new Scene(root, 1000, 700);
         chartStage.setScene(scene);
         chartStage.show();
-    }
 
-    private VBox buildWorkflowGuide() {
-        VBox box = new VBox(0);
-        box.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12; "
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
-        box.setPadding(new Insets(14, 18, 14, 18));
-
-        Label title = new Label("Getting Started");
-        title.setStyle("-fx-font-size: 13; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
-
-        String[][] steps = {
-                { "🚗", "Register Dealers", "Dealer Portal → enter name, car model, retail price & stock" },
-                { "🧑", "Register Buyers", "Buyer Portal → enter name, desired car & max budget" },
-                { "▶️", "Start Negotiation", "Click \u25b6 Start in the toolbar above" },
-                { "🔁", "Monitor Sessions", "Sessions tab shows live session events from the broker" },
-                { "📋", "Review Outcomes", "Activity Log & Failures tabs show full negotiation history" }
-        };
-
-        HBox stepsRow = new HBox(0);
-        stepsRow.setPadding(new Insets(8, 0, 0, 0));
-        for (int i = 0; i < steps.length; i++) {
-            String[] s = steps[i];
-            VBox step = new VBox(3);
-            step.setPadding(new Insets(10, 14, 10, 14));
-            step.setAlignment(javafx.geometry.Pos.TOP_LEFT);
-            HBox.setHgrow(step, Priority.ALWAYS);
-            // Alternate background for zebra feel
-            String bg = (i % 2 == 0) ? SURFACE : SURFACE_ALT;
-            step.setStyle("-fx-background-color: " + bg + ";");
-
-            Label icon = new Label(s[0] + " " + (i + 1));
-            icon.setStyle("-fx-font-size: 18; -fx-font-weight: 700; -fx-text-fill: " + TEXT_MUTED + ";");
-            Label name = new Label(s[1]);
-            name.setStyle("-fx-font-size: 12; -fx-font-weight: 700; -fx-text-fill: " + DARK_TEXT + ";");
-            Label desc = new Label(s[2]);
-            desc.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + "; -fx-wrap-text: true;");
-            desc.setMaxWidth(180);
-            step.getChildren().addAll(icon, name, desc);
-            stepsRow.getChildren().add(step);
-
-            if (i < steps.length - 1) {
-                Label arrow = new Label("›");
-                arrow.setStyle("-fx-font-size: 22; -fx-text-fill: " + BORDER_SUBTLE + ";");
-                arrow.setAlignment(javafx.geometry.Pos.CENTER);
-                arrow.setPadding(new Insets(8, 2, 0, 2));
-                stepsRow.getChildren().add(arrow);
-            }
-        }
-        box.getChildren().addAll(title, stepsRow);
-        return box;
+        refreshTrajectoryChart(); // Initial sync
     }
 
     private void updateDealerStatus() {
@@ -1727,6 +1978,304 @@ public class MainUI extends Application {
         alert.setHeaderText(null);
         alert.setContentText(message);
         alert.showAndWait();
+    }
+
+    private void refreshTrajectoryFilters() {
+        String currentAgent = chartAgentSelect != null ? chartAgentSelect.getValue() : ALL_AGENTS;
+        String currentSession = chartSessionSelect != null ? chartSessionSelect.getValue() : ALL_SESSIONS;
+        String currentCar = chartCarFilter != null ? chartCarFilter.getValue() : ALL_CARS;
+
+        List<String> agents = new ArrayList<>();
+        agents.add(ALL_AGENTS);
+        agents.addAll(agentPoints.keySet());
+
+        List<String> sessions = new ArrayList<>();
+        sessions.add(ALL_SESSIONS);
+        sessions.addAll(sessionPoints.keySet());
+
+        List<String> cars = new ArrayList<>();
+        cars.add(ALL_CARS);
+        for (SessionMeta meta : sessionMetaMap.values()) {
+            if (meta.car != null && !cars.contains(meta.car)) {
+                cars.add(meta.car);
+            }
+        }
+        for (List<TrajectoryPoint> list : agentPoints.values()) {
+            for (TrajectoryPoint pt : list) {
+                if (pt.car != null && !cars.contains(pt.car)) {
+                    cars.add(pt.car);
+                }
+            }
+        }
+
+        if (chartAgentSelect != null) {
+            chartAgentSelect.getItems().setAll(agents);
+            if (agents.contains(currentAgent))
+                chartAgentSelect.setValue(currentAgent);
+            else
+                chartAgentSelect.setValue(ALL_AGENTS);
+            chartAgentSelect.setDisable(chartMode == TrajectoryMode.SESSION || chartMode == TrajectoryMode.MARKET);
+        }
+
+        if (chartSessionSelect != null) {
+            chartSessionSelect.getItems().setAll(sessions);
+            if (sessions.contains(currentSession))
+                chartSessionSelect.setValue(currentSession);
+            else
+                chartSessionSelect.setValue(ALL_SESSIONS);
+            chartSessionSelect.setDisable(chartMode == TrajectoryMode.AGENT || chartMode == TrajectoryMode.MARKET);
+        }
+
+        if (chartCarFilter != null) {
+            chartCarFilter.getItems().setAll(cars);
+            if (cars.contains(currentCar))
+                chartCarFilter.setValue(currentCar);
+            else
+                chartCarFilter.setValue(ALL_CARS);
+        }
+    }
+
+    private void refreshTrajectoryChart() {
+        if (priceChart == null)
+            return;
+        for (LineChart<Number, Number> chart : activeCharts) {
+            chart.getData().clear();
+        }
+
+        boolean showMarkers = chartMarkersToggle != null && chartMarkersToggle.isSelected();
+        boolean fullHistory = chartAllHistoryToggle != null && chartAllHistoryToggle.isSelected();
+        int limit = fullHistory ? Integer.MAX_VALUE
+                : (chartHistorySlider != null ? (int) chartHistorySlider.getValue() : 60);
+
+        String selAgent = chartAgentSelect != null ? chartAgentSelect.getValue() : ALL_AGENTS;
+        String selSession = chartSessionSelect != null ? chartSessionSelect.getValue() : ALL_SESSIONS;
+        String selCar = chartCarFilter != null ? chartCarFilter.getValue() : ALL_CARS;
+
+        Map<String, List<TrajectoryPoint>> source = (chartMode == TrajectoryMode.AGENT) ? agentPoints : sessionPoints;
+
+        for (Map.Entry<String, List<TrajectoryPoint>> entry : source.entrySet()) {
+            String key = entry.getKey();
+            List<TrajectoryPoint> allPts = entry.getValue();
+
+            if (chartMode == TrajectoryMode.AGENT) {
+                if (!ALL_AGENTS.equals(selAgent) && !key.equals(selAgent))
+                    continue;
+            } else {
+                if (!ALL_SESSIONS.equals(selSession) && !key.equals(selSession))
+                    continue;
+            }
+
+            // Filter by car
+            List<TrajectoryPoint> filtered = new ArrayList<>();
+            for (TrajectoryPoint pt : allPts) {
+                if (!ALL_CARS.equals(selCar)) {
+                    String ptCar = pt.car;
+                    if (ptCar == null && pt.sessionId != null) {
+                        SessionMeta meta = sessionMetaMap.get(pt.sessionId);
+                        if (meta != null)
+                            ptCar = meta.car;
+                    }
+                    if (ptCar == null || !ptCar.equals(selCar))
+                        continue;
+                }
+                filtered.add(pt);
+            }
+
+            if (filtered.isEmpty())
+                continue;
+
+            List<TrajectoryPoint> displayPts;
+            if (chartMode == TrajectoryMode.MARKET) {
+                displayPts = new ArrayList<>();
+                if (!filtered.isEmpty()) {
+                    TrajectoryPoint last = filtered.get(filtered.size() - 1);
+                    for (TrajectoryPoint p : filtered) {
+                        if (p.event == TrajectoryEvent.ACCEPT || p.event == TrajectoryEvent.WALKAWAY) {
+                            last = p;
+                        }
+                    }
+                    displayPts.add(last);
+                }
+            } else {
+                // Apply history limit
+                int startIdx = Math.max(0, filtered.size() - limit);
+                displayPts = new ArrayList<>(filtered.subList(startIdx, filtered.size()));
+                displayPts.sort(java.util.Comparator.comparingInt(p -> p.cycle));
+            }
+
+            for (LineChart<Number, Number> chart : activeCharts) {
+                // Group points by agent to draw distinct lines per agent in the session/market
+                Map<String, List<TrajectoryPoint>> pointsByAgent = new HashMap<>();
+                if (chartMode == TrajectoryMode.SESSION || chartMode == TrajectoryMode.MARKET) {
+                    for (TrajectoryPoint p : displayPts) {
+                        if (p.event == TrajectoryEvent.ACCEPT || p.event == TrajectoryEvent.WALKAWAY) {
+                            // Attach the broker's outcome point to the negotiating agents so the lines converge
+                            java.util.Set<String> sessionAgents = new java.util.HashSet<>();
+                            for (TrajectoryPoint other : displayPts) {
+                                if (other.event != TrajectoryEvent.ACCEPT && other.event != TrajectoryEvent.WALKAWAY) {
+                                    sessionAgents.add(other.agent);
+                                }
+                            }
+                            if (sessionAgents.isEmpty()) {
+                                pointsByAgent.computeIfAbsent(p.agent, k -> new ArrayList<>()).add(p);
+                            } else {
+                                for (String a : sessionAgents) {
+                                    pointsByAgent.computeIfAbsent(a, k -> new ArrayList<>()).add(new TrajectoryPoint(p.cycle, p.price, a, p.sessionId, p.car, p.event));
+                                }
+                            }
+                        } else {
+                            pointsByAgent.computeIfAbsent(p.agent, k -> new ArrayList<>()).add(p);
+                        }
+                    }
+                } else {
+                    pointsByAgent.put(key, displayPts); // Agent mode keeps it as one series per agent
+                }
+
+                for (Map.Entry<String, List<TrajectoryPoint>> agentEntry : pointsByAgent.entrySet()) {
+                    XYChart.Series<Number, Number> series = new XYChart.Series<>();
+                    series.setName(chartMode == TrajectoryMode.AGENT ? key : agentEntry.getKey() + " (" + key + ")");
+
+                    for (TrajectoryPoint pt : agentEntry.getValue()) {
+                        XYChart.Data<Number, Number> dataNode = new XYChart.Data<>(pt.cycle, pt.price);
+                        if (showMarkers || chartMode == TrajectoryMode.MARKET) { // Market mode always needs markers
+                            javafx.scene.shape.Shape marker = createMarker(pt.event);
+                            if (marker != null) {
+                                dataNode.setNode(marker);
+                                Tooltip tooltip = new Tooltip(String.format(
+                                        "Agent: %s\nSession: %s\nCycle: %d\nPrice: RM %.0f\nEvent: %s\nCar: %s",
+                                        pt.agent, pt.sessionId != null ? pt.sessionId : "N/A", pt.cycle, pt.price, pt.event,
+                                        pt.car != null ? pt.car : "N/A"));
+                                tooltip.setShowDelay(javafx.util.Duration.millis(50));
+                                Tooltip.install(marker, tooltip);
+                                marker.setOnMouseClicked(e -> tooltip.show(marker, e.getScreenX(), e.getScreenY() + 10));
+                                marker.setCursor(javafx.scene.Cursor.HAND);
+                            }
+                        } else {
+                            Region invisibleNode = new Region();
+                            invisibleNode.setPrefSize(8, 8);
+                            invisibleNode.setStyle("-fx-background-color: transparent;");
+                            dataNode.setNode(invisibleNode);
+                            Tooltip tooltip = new Tooltip(
+                                    String.format("Agent: %s\nSession: %s\nCycle: %d\nPrice: RM %.0f\nEvent: %s\nCar: %s",
+                                            pt.agent, pt.sessionId != null ? pt.sessionId : "N/A", pt.cycle, pt.price,
+                                            pt.event, pt.car != null ? pt.car : "N/A"));
+                            tooltip.setShowDelay(javafx.util.Duration.millis(50));
+                            Tooltip.install(invisibleNode, tooltip);
+                            invisibleNode.setOnMouseClicked(
+                                    e -> tooltip.show(invisibleNode, e.getScreenX(), e.getScreenY() + 10));
+                            invisibleNode.setCursor(javafx.scene.Cursor.HAND);
+                        }
+                        series.getData().add(dataNode);
+                    }
+                    chart.getData().add(series);
+                    if (chartMode == TrajectoryMode.MARKET && series.getNode() != null) {
+                        series.getNode().setStyle("-fx-stroke: transparent;");
+                    }
+                }
+            }
+        }
+
+        // Add baselines
+        if (chartBaselinesToggle != null && chartBaselinesToggle.isSelected() && chartMode == TrajectoryMode.SESSION
+                && !ALL_SESSIONS.equals(selSession)) {
+            SessionMeta meta = sessionMetaMap.get(selSession);
+            if (meta != null) {
+                for (LineChart<Number, Number> chart : activeCharts) {
+                    int minCycle = getMinCycle(chart);
+                    int maxCycle = getMaxCycle(chart);
+
+                    if (meta.buyerReserve != null) {
+                        XYChart.Series<Number, Number> brSeries = new XYChart.Series<>();
+                        brSeries.setName("Buyer Reserve");
+                        brSeries.getData().add(new XYChart.Data<>(minCycle, meta.buyerReserve));
+                        brSeries.getData().add(new XYChart.Data<>(maxCycle, meta.buyerReserve));
+                        chart.getData().add(brSeries);
+                        if (brSeries.getNode() != null) {
+                            brSeries.getNode().setStyle("-fx-stroke: " + PRIMARY_BLUE + "; -fx-stroke-width: 2; -fx-stroke-dash-array: 5 5;");
+                        }
+                    }
+                    if (meta.dealerReserve != null) {
+                        XYChart.Series<Number, Number> drSeries = new XYChart.Series<>();
+                        drSeries.setName("Dealer Reserve");
+                        drSeries.getData().add(new XYChart.Data<>(minCycle, meta.dealerReserve));
+                        drSeries.getData().add(new XYChart.Data<>(maxCycle, meta.dealerReserve));
+                        chart.getData().add(drSeries);
+                        if (drSeries.getNode() != null) {
+                            drSeries.getNode().setStyle("-fx-stroke: " + ERROR_RED + "; -fx-stroke-width: 2; -fx-stroke-dash-array: 5 5;");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private javafx.scene.shape.Shape createMarker(TrajectoryEvent event) {
+        if (event == null)
+            return null;
+        switch (event) {
+            case ACCEPT:
+                javafx.scene.shape.Polygon star = new javafx.scene.shape.Polygon();
+                star.getPoints().addAll(0.0, -6.0, 1.8, -1.8, 6.0, -1.8, 2.7, 0.6, 4.0, 5.0, 0.0, 2.4, -4.0, 5.0, -2.7,
+                        0.6, -6.0, -1.8, -1.8, -1.8);
+                star.setFill(Color.web(SUCCESS_GREEN));
+                star.setStroke(Color.WHITE);
+                star.setStrokeWidth(1);
+                return star;
+            case COUNTER:
+                javafx.scene.shape.Polygon diamond = new javafx.scene.shape.Polygon();
+                diamond.getPoints().addAll(0.0, -4.0, 4.0, 0.0, 0.0, 4.0, -4.0, 0.0);
+                diamond.setFill(Color.web(WARNING_ORANGE));
+                diamond.setStroke(Color.WHITE);
+                diamond.setStrokeWidth(1);
+                return diamond;
+            case WALKAWAY:
+                javafx.scene.shape.Path cross = new javafx.scene.shape.Path();
+                cross.getElements().add(new javafx.scene.shape.MoveTo(-4, -4));
+                cross.getElements().add(new javafx.scene.shape.LineTo(4, 4));
+                cross.getElements().add(new javafx.scene.shape.MoveTo(4, -4));
+                cross.getElements().add(new javafx.scene.shape.LineTo(-4, 4));
+                cross.setStroke(Color.web(ERROR_RED));
+                cross.setStrokeWidth(2.5);
+                return cross;
+            case START:
+                javafx.scene.shape.Circle dot = new javafx.scene.shape.Circle(3.5);
+                dot.setFill(Color.web(PRIMARY_BLUE));
+                dot.setStroke(Color.WHITE);
+                dot.setStrokeWidth(1);
+                return dot;
+            case OFFER:
+            case PRICE_UPDATE:
+            default:
+                javafx.scene.shape.Circle defaultDot = new javafx.scene.shape.Circle(3.5);
+                defaultDot.setFill(Color.web(ACCENT_BLUE));
+                defaultDot.setStroke(Color.WHITE);
+                defaultDot.setStrokeWidth(1);
+                return defaultDot;
+        }
+    }
+
+    private int getMinCycle(LineChart<Number, Number> chart) {
+        int min = Integer.MAX_VALUE;
+        for (XYChart.Series<Number, Number> series : chart.getData()) {
+            if (series.getName() != null && series.getName().contains("Reserve"))
+                continue;
+            for (XYChart.Data<Number, Number> data : series.getData()) {
+                min = Math.min(min, data.getXValue().intValue());
+            }
+        }
+        return min == Integer.MAX_VALUE ? 0 : min;
+    }
+
+    private int getMaxCycle(LineChart<Number, Number> chart) {
+        int max = Integer.MIN_VALUE;
+        for (XYChart.Series<Number, Number> series : chart.getData()) {
+            if (series.getName() != null && series.getName().contains("Reserve"))
+                continue;
+            for (XYChart.Data<Number, Number> data : series.getData()) {
+                max = Math.max(max, data.getXValue().intValue());
+            }
+        }
+        return max == Integer.MIN_VALUE ? 100 : Math.max(max, currentCycle);
     }
 
     public interface UILogger {
