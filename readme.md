@@ -63,15 +63,14 @@ mvn javafx:run
 ## Demo Flow
 
 1. Register one or more dealer agents in the Dealer Portal.
-2. Add buyer agents in the Buyer Portal. Check the "Manual Negotiation Mode" box if you wish to negotiate manually yourself. Buyers are created in a waiting state and do not negotiate immediately.
+2. Add buyer agents in the Buyer Portal. Buyers are created in a waiting state and do not negotiate immediately.
 3. Alternatively, press `Demo Setup` in the global controls to automatically create a heavier stress-test mix of sample dealers and waiting buyers.
 4. Use the global controls above the tabs to manage the demo from any screen.
 5. Press `Start` to begin all waiting buyer negotiations.
-6. For any manual buyers, navigate to the `Manual Mode` tab to evaluate shortlists and exchange counter-offers yourself.
-7. Use `Pause` / `Resume` to control market cycles during the demo.
-8. Use `Step Cycle` to manually advance the market one cycle at a time.
-9. Use `Sniffer` to open the JADE Sniffer and observe ACL messages.
-10. Use `Stop` to terminate active buyer negotiations and record them as `NO_DEAL;USER_STOPPED`.
+6. Use `Pause` / `Resume` to control market cycles during the demo.
+7. Use `Step Cycle` to manually advance the market one cycle at a time.
+8. Use `Sniffer` to open the JADE Sniffer and observe ACL messages.
+9. Use `Stop` to terminate active buyer negotiations and record them as `NO_DEAL;USER_STOPPED`.
 
 Demo Agents
 ----------
@@ -151,15 +150,6 @@ Inputs:
 - retail price
 - stock quantity
 
-### Manual Mode
-
-Allows a human user to take direct control over a `BuyerAgent` that was created with Manual Mode enabled. 
-When the broker returns a shortlist, or a dealer returns a counter-offer, the automated strategies are paused. The system instead waits for you to use the Action Panel to:
-- Pick a dealer from the options and set the First Offer.
-- Submit a Counter-Offer.
-- Accept the current deal.
-- Walk Away from the negotiation.
-
 ### Market Analysis
 
 Configures negotiation behaviour before creating agents:
@@ -190,11 +180,9 @@ flowchart LR
     Dealer -->|INFORM listing| Broker
     Buyer -->|REQUEST car search| Broker
     Broker -->|PROPOSE dealer list| Buyer
-    Buyer -->|PROPOSE shortlist & offer| Broker
-    Broker -->|CFP (Call for Proposal)| Dealer
-    Dealer -->|PROPOSE (counter) or ACCEPT| Broker
-    Broker -->|PROPOSE (counter) or ACCEPT| Buyer
-    Buyer/Dealer -->|CONFIRM deal/no-deal| Broker
+    Buyer -->|PROPOSE offer| Dealer
+    Dealer -->|ACCEPT or REJECT_PROPOSAL| Buyer
+    Buyer -->|CONFIRM deal/no-deal| Broker
     Space -->|CYCLE_UPDATE| Buyer
     Space -->|CYCLE_UPDATE| Dealer
 ```
@@ -210,11 +198,11 @@ Main behaviour:
 1. Waits until it receives `START_NEGOTIATION`.
 2. Sends `REQUEST` to the broker for the desired car.
 3. Receives dealer options from the broker.
-4. Checks whether any dealer reserve price is within the buyer budget and builds a shortlist.
-5. Sends `PROPOSE` (BUYER_SHORTLIST) to the broker containing initial offers.
-6. Handles broker-routed `PROPOSE` (BROKER_RELAY_COUNTER) counter-offers from dealers.
-7. Sends a revised `PROPOSE` (BUYER_COUNTER) back to the broker if still negotiating.
-8. Handles broker-routed `ACCEPT_PROPOSAL` and confirms the deal.
+4. Checks whether any dealer reserve price is within the buyer budget.
+5. Sends `PROPOSE` offers to dealers.
+6. Handles `REJECT_PROPOSAL` counter-offers.
+7. Sends a revised `PROPOSE` if still negotiating.
+8. Handles `ACCEPT_PROPOSAL` and confirms the deal to the broker.
 9. Sends no-deal confirmation if budget, retry, or round limits are exceeded.
 
 Important state:
@@ -237,9 +225,9 @@ Main behaviour:
 1. Registers its car listing with the broker.
 2. Registers with `SpaceControl` to receive cycle updates.
 3. Calculates a dynamic target price each cycle.
-4. Receives broker-routed `CFP` (DEALER_EVALUATE) negotiation requests from buyers.
-5. Accepts if the buyer offer is at least the current target price by sending `ACCEPT_PROPOSAL` to the broker.
-6. Rejects with a counter-offer by sending `PROPOSE` (DEALER_COUNTER) back to the broker.
+4. Receives buyer `PROPOSE` messages.
+5. Accepts if the buyer offer is at least the current target price.
+6. Rejects with a counter-offer if the buyer offer is too low.
 7. Reduces stock after a successful sale.
 8. Terminates when stock reaches zero.
 
@@ -261,10 +249,8 @@ Main behaviour:
 2. Stores car model, dealer name, retail price, reserve price, and stock.
 3. Receives buyer search requests through `REQUEST`.
 4. Replies with matching dealers using `PROPOSE`.
-5. Receives `PROPOSE` (BUYER_SHORTLIST) from buyers and routes offers to dealers via `CFP`.
-6. Relays counter-offers (`PROPOSE`) and acceptances (`ACCEPT_PROPOSAL`) between buyers and dealers.
-7. Receives deal/no-deal confirmations through `CONFIRM`.
-8. Calculates transaction fee, commission, total revenue, and performance metrics.
+5. Receives buyer deal/no-deal confirmations through `CONFIRM`.
+6. Calculates transaction fee, commission, total revenue, and performance metrics.
 
 Performance metrics logged:
 
@@ -307,15 +293,11 @@ Examples:
 | Dealer | Broker | `INFORM` | empty | `car;retailPrice;stock;reservePrice` | Dealer lists inventory. |
 | Buyer | Broker | `REQUEST` | empty | `desiredCar` | Buyer searches for matching car. |
 | Broker | Buyer | `PROPOSE` | empty | `dealer:price:reserve,...` or `NONE` | Broker returns matching dealers. |
-| Buyer | Broker | `PROPOSE` | `BUYER_SHORTLIST` | `sessionId;dealer;offer;budget;car` | Buyer submits shortlist and first offer. |
-| Broker | Dealer | `CFP` | `DEALER_EVALUATE` | `sessionId;offer;budget` | Broker routes offer to dealer. |
-| Dealer | Broker | `PROPOSE` | `DEALER_COUNTER` | `sessionId;counterPrice` | Dealer counters the offer. |
-| Dealer | Broker | `ACCEPT_PROPOSAL`| `DEALER_ACCEPT` | `sessionId;acceptedPrice` | Dealer accepts the offer. |
-| Broker | Buyer | `PROPOSE` | `BROKER_RELAY_COUNTER` | `dealer;counterPrice` | Broker relays counter-offer to buyer. |
-| Broker | Buyer | `ACCEPT_PROPOSAL`| `BROKER_RELAY_ACCEPT` | `dealer;acceptedPrice` | Broker relays acceptance to buyer. |
-| Buyer | Broker | `PROPOSE` | `BUYER_COUNTER` | `sessionId;offerPrice` | Buyer counters dealer's counter-offer. |
+| Buyer | Dealer | `PROPOSE` | empty | `offerPrice` | Buyer makes an offer. |
+| Dealer | Buyer | `REJECT_PROPOSAL` | empty | `currentTargetPrice` | Dealer rejects and counter-offers. |
+| Dealer | Buyer | `ACCEPT_PROPOSAL` | empty | `acceptedPrice` | Dealer accepts buyer offer. |
 | Buyer | Broker | `CONFIRM` | empty | `price;dealer;car;rounds` | Buyer confirms successful deal. |
-| Buyer | Broker | `FAILURE` | `BUYER_WALKAWAY` | `sessionId;reason` | Buyer reports failed negotiation. |
+| Buyer | Broker | `CONFIRM` | empty | `NO_DEAL;reason;car;budget` | Buyer reports failed negotiation. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `REGISTER` | empty | Agent joins cycle updates. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `DEREGISTER` | empty | Agent leaves cycle updates. |
 | Buyer | SpaceControl | `INFORM` | `ACTION_COMPLETED` | empty | Negotiation action completed; cycle may advance. |
@@ -323,7 +305,6 @@ Examples:
 | UI helper | Buyer | `INFORM` | `START_NEGOTIATION` | empty | Starts waiting buyer. |
 | UI helper | Buyer | `INFORM` | `STOP_NEGOTIATION` | empty | Stops buyer negotiation. |
 | UI helper | Dealer | `INFORM` | `PRICE_ADJUSTMENT` | `newPrice` | Manually adjusts dealer target price. |
-| UI helper | Buyer | `INFORM` | `MANUAL_ACTION` | `action;args...` | Sends explicit human command (SHORTLIST, COUNTER, ACCEPT, WALKAWAY). |
 
 ## Sequence Diagrams
 
@@ -342,17 +323,13 @@ sequenceDiagram
     U->>B: REQUEST desired car
     U->>S: INFORM REGISTER
     B->>U: PROPOSE matching dealers
-    U->>B: PROPOSE (BUYER_SHORTLIST) offer
-    B->>D: CFP (DEALER_EVALUATE) offer
-    D-->>B: PROPOSE (DEALER_COUNTER)
-    B-->>U: PROPOSE (BROKER_RELAY_COUNTER)
+    U->>D: PROPOSE buyer offer
+    D-->>U: REJECT_PROPOSAL counter price
     U->>S: INFORM ACTION_COMPLETED
     S-->>U: PROPAGATE CYCLE_UPDATE
     S-->>D: PROPAGATE CYCLE_UPDATE
-    U->>B: PROPOSE (BUYER_COUNTER)
-    B->>D: CFP (DEALER_EVALUATE)
-    D-->>B: ACCEPT_PROPOSAL (DEALER_ACCEPT)
-    B-->>U: ACCEPT_PROPOSAL (BROKER_RELAY_ACCEPT)
+    U->>D: PROPOSE revised offer
+    D-->>U: ACCEPT_PROPOSAL final price
     U->>B: CONFIRM deal details
     U->>S: INFORM DEREGISTER
 ```
