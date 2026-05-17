@@ -134,6 +134,10 @@ public class BuyerAgent extends Agent {
                         if (negotiationStarted) handleBrokerRelaySoldOut(msg);
                         break;
 
+                    case "BROKER_SESSION_REJECTED":
+                        if (negotiationStarted) handleBrokerSessionRejected(msg);
+                        break;
+
                     case "MANUAL_ACTION":
                         handleManualAction(msg);
                         break;
@@ -203,7 +207,7 @@ public class BuyerAgent extends Agent {
             searchRetries++;
             if (searchRetries > config.getMaxSearchRetries()) {
                 log("STATUS: No matching car after " + config.getMaxSearchRetries() + " retries. Ending.");
-                sendWalkaway(null, "NO_MATCHING_CAR");
+                sendNoDealReport("NO_MATCHING_CAR");
                 triggerMarketAction();
                 doDelete();
             } else {
@@ -229,7 +233,7 @@ public class BuyerAgent extends Agent {
         boolean anyAffordable = dealers.stream().anyMatch(d -> d.reservePrice <= maxBudget);
         if (!anyAffordable) {
             log("STATUS: All dealers' reserve prices exceed budget RM" + maxBudget + ". Ending.");
-            sendWalkaway(null, "BUDGET_TOO_LOW");
+            sendNoDealReport("BUDGET_TOO_LOW");
             triggerMarketAction();
             doDelete();
             return;
@@ -272,7 +276,7 @@ public class BuyerAgent extends Agent {
         if (currentDealerIdx >= dealers.size()) {
             if (!dealFound) {
                 log("STATUS: All dealers exhausted. No deal reached.");
-                sendWalkaway(null, "MAX_ROUNDS_REACHED");
+                sendNoDealReport("MAX_ROUNDS_REACHED");
                 triggerMarketAction();
                 doDelete();
             }
@@ -377,6 +381,21 @@ public class BuyerAgent extends Agent {
 
     // ── Outbound helpers ──────────────────────────────────────────────────────
 
+    private void handleBrokerSessionRejected(ACLMessage msg) {
+        String[] p = msg.getContent().split(";", 2);
+        String sid = p.length > 0 ? p[0] : activeSessionId;
+        String reason = p.length > 1 ? p[1] : "UNKNOWN";
+        log("STATUS: Broker closed/rejected session " + sid + " (" + reason + ").");
+        if ("TIMEOUT".equals(reason)) {
+            triggerMarketAction();
+            doDelete();
+            return;
+        }
+        currentDealerIdx++;
+        dealerAttemptIndex++;
+        submitShortlistToBroker();
+    }
+
     /** Send BUYER_COUNTER (PROPOSE / BUYER_COUNTER) to broker */
     private void sendBuyerCounter(String sessionId, int offer) {
         ACLMessage counter = new ACLMessage(ACLMessage.PROPOSE);
@@ -394,11 +413,23 @@ public class BuyerAgent extends Agent {
 
     /** Send BUYER_WALKAWAY (FAILURE / BUYER_WALKAWAY) to broker */
     private void sendWalkaway(String sessionId, String reason) {
-        if (sessionId == null) return;  // no active session to close
+        if (sessionId == null) {
+            sendNoDealReport(reason);
+            return;
+        }
         ACLMessage walkaway = new ACLMessage(ACLMessage.FAILURE);
         walkaway.addReceiver(new AID("broker", AID.ISLOCALNAME));
         walkaway.setOntology("BUYER_WALKAWAY");
         walkaway.setContent(sessionId + ";" + reason);
+        send(walkaway);
+    }
+
+    private void sendNoDealReport(String reason) {
+        String reportId = getLocalName() + "-" + desiredCar + "-pre-session-" + reason;
+        ACLMessage walkaway = new ACLMessage(ACLMessage.FAILURE);
+        walkaway.addReceiver(new AID("broker", AID.ISLOCALNAME));
+        walkaway.setOntology("BUYER_WALKAWAY");
+        walkaway.setContent(reportId + ";" + reason + ";" + desiredCar + ";" + maxBudget);
         send(walkaway);
     }
 
@@ -419,6 +450,10 @@ public class BuyerAgent extends Agent {
         if ("SHORTLIST".equals(action) && parts.length >= 3) {
             String dealerName = parts[1];
             int firstOffer = Integer.parseInt(parts[2]);
+            if (dealerName == null || dealerName.trim().isEmpty() || firstOffer <= 0) {
+                log("MANUAL: Select a dealer and enter a positive first offer.");
+                return;
+            }
             
             activeSessionId = getLocalName() + "-" + desiredCar + "-" + dealerAttemptIndex;
             ACLMessage prop = new ACLMessage(ACLMessage.PROPOSE);
@@ -431,6 +466,10 @@ public class BuyerAgent extends Agent {
             
         } else if ("COUNTER".equals(action) && parts.length >= 2) {
             int price = Integer.parseInt(parts[1]);
+            if (activeSessionId == null || price <= 0) {
+                log("MANUAL: Counter requires an active session and a positive price.");
+                return;
+            }
             ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
             counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
             counterMsg.setOntology("BUYER_COUNTER");
@@ -440,6 +479,10 @@ public class BuyerAgent extends Agent {
             
         } else if ("ACCEPT".equals(action) && parts.length >= 2) {
             int price = Integer.parseInt(parts[1]);
+            if (activeSessionId == null || price <= 0) {
+                log("MANUAL: Accept requires an active session and a positive price.");
+                return;
+            }
             ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
             counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
             counterMsg.setOntology("BUYER_COUNTER");

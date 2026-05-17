@@ -5,8 +5,8 @@ import jade.lang.acl.ACLMessage;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.core.behaviours.OneShotBehaviour;
 import org.example.MainUI.UILogger;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -38,8 +38,24 @@ public class DealerAgent extends Agent {
     private int    stockCount;
     private int    manualTargetPrice = -1;
     private NegotiationConfig.Strategy activeStrategy;
-    /** All session IDs currently being negotiated. Used to notify broker on stock-out. */
-    private final Set<String> activeSessions = new LinkedHashSet<>();
+    private final Map<String, DealerSessionState> activeSessions = new LinkedHashMap<>();
+
+    private static class DealerSessionState {
+        String sessionId;
+        String buyerName;
+        String carModel;
+        int latestOffer;
+        int rounds;
+        String status;
+
+        DealerSessionState(String sessionId, String buyerName, String carModel, int latestOffer) {
+            this.sessionId = sessionId;
+            this.buyerName = buyerName;
+            this.carModel = carModel;
+            this.latestOffer = latestOffer;
+            this.status = "NEGOTIATING";
+        }
+    }
 
     @Override
     protected void setup() {
@@ -93,8 +109,6 @@ public class DealerAgent extends Agent {
 
                 } else if ("BROKER_INVITE".equals(ont)) {
                     // Content: "sessionId;buyerName;carModel;offer" — first contact for this session
-                    String sid = msg.getContent().split(";")[0];
-                    activeSessions.add(sid);
                     handleBrokerOffer(msg);
                 } else if ("BROKER_RELAY_OFFER".equals(ont)) {
                     // Content: "sessionId;buyerName;carModel;offer" — subsequent buyer counter
@@ -137,7 +151,13 @@ public class DealerAgent extends Agent {
 
     private void handleBrokerOffer(ACLMessage msg) {
         String[] p    = msg.getContent().split(";");
+        if (p.length < 4) {
+            log("STATUS: Ignored malformed broker offer: " + msg.getContent());
+            return;
+        }
         String sessionId  = p[0];
+        String buyerName = p[1];
+        String carModel = p[2];
 
         if (stockCount <= 0) {
             // Already sold out, reject immediately (zombie window)
@@ -152,6 +172,12 @@ public class DealerAgent extends Agent {
 
         // p[1] = buyerName, p[2] = carModel — available for logging / Extension 1 per-session state
         int buyerOffer    = Integer.parseInt(p[3]);
+        DealerSessionState state = activeSessions.computeIfAbsent(sessionId,
+                id -> new DealerSessionState(id, buyerName, carModel, buyerOffer));
+        state.buyerName = buyerName;
+        state.carModel = carModel;
+        state.latestOffer = buyerOffer;
+        state.rounds++;
         negotiationCount++;
 
         log("OFFER #" + negotiationCount + ": [" + sessionId + "] Buyer offered RM" + buyerOffer
@@ -160,6 +186,7 @@ public class DealerAgent extends Agent {
         if (buyerOffer >= currentTargetPrice) {
             // Accept — decrement stock and remove this session from active set
             stockCount--;
+            state.status = "SETTLED";
             activeSessions.remove(sessionId);
 
             ACLMessage accept = new ACLMessage(ACLMessage.ACCEPT_PROPOSAL);
@@ -170,7 +197,7 @@ public class DealerAgent extends Agent {
             // Snapshot remaining sessions at the exact moment of stock-out
             final boolean isStockOutTrigger = (stockCount == 0);
             final String pendingSessionsCsv = (isStockOutTrigger && !activeSessions.isEmpty())
-                    ? activeSessions.stream().collect(Collectors.joining(","))
+                    ? activeSessions.keySet().stream().collect(Collectors.joining(","))
                     : "";
 
             if (isStockOutTrigger) {
@@ -202,6 +229,7 @@ public class DealerAgent extends Agent {
             });
             log("DEAL CLOSED: [" + sessionId + "] RM" + buyerOffer + " | Stock: " + stockCount);
         } else {
+            state.status = "COUNTERED";
             // Counter-offer
             ACLMessage counter = new ACLMessage(ACLMessage.REJECT_PROPOSAL);
             counter.addReceiver(new AID("broker", AID.ISLOCALNAME));

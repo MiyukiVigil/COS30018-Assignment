@@ -16,7 +16,6 @@ This project is a JADE-based multi-agent car marketplace. Dealer agents list car
 
 - Java 17
 - Maven
-- JADE 4.6.0 `jade.jar`
 
 ### Installation
 
@@ -38,7 +37,7 @@ This project is a JADE-based multi-agent car marketplace. Dealer agents list car
    mvn install
    ```
 
-4. If Maven cannot find JADE, place `jade.jar` in the project root and install it locally.
+4. JADE is declared as a normal Maven dependency. If your Maven environment cannot resolve the JADE repository, install `jade.jar` locally as a fallback.
 
    Linux/macOS:
 
@@ -59,6 +58,10 @@ Start the JavaFX application with:
 ```bash
 mvn javafx:run
 ```
+
+## Runtime Defaults
+
+Runtime defaults are loaded from `src/main/resources/negotiation-defaults.properties`. The file controls broker fees, commission, session timeout, strategy defaults, negotiation limits, and the starter weights for multi-attribute utility scoring. The JavaFX settings panel loads those defaults on startup and still lets you override strategy values for newly created agents.
 
 ## Demo Flow
 
@@ -180,9 +183,10 @@ flowchart LR
     Dealer -->|INFORM listing| Broker
     Buyer -->|REQUEST car search| Broker
     Broker -->|PROPOSE dealer list| Buyer
-    Buyer -->|PROPOSE offer| Dealer
-    Dealer -->|ACCEPT or REJECT_PROPOSAL| Buyer
-    Buyer -->|CONFIRM deal/no-deal| Broker
+    Buyer -->|PROPOSE first offer/counter| Broker
+    Broker -->|REQUEST/PROPOSE routed offer| Dealer
+    Dealer -->|ACCEPT or REJECT_PROPOSAL| Broker
+    Broker -->|routed accept/counter| Buyer
     Space -->|CYCLE_UPDATE| Buyer
     Space -->|CYCLE_UPDATE| Dealer
 ```
@@ -249,8 +253,8 @@ Main behaviour:
 2. Stores car model, dealer name, retail price, reserve price, and stock.
 3. Receives buyer search requests through `REQUEST`.
 4. Replies with matching dealers using `PROPOSE`.
-5. Receives buyer deal/no-deal confirmations through `CONFIRM`.
-6. Calculates transaction fee, commission, total revenue, and performance metrics.
+5. Creates negotiation sessions from buyer shortlists and routes every offer, counter, accept, and walkaway message.
+6. Applies timeout handling, fixed fees, commission, total revenue, and performance metrics.
 
 Performance metrics logged:
 
@@ -291,13 +295,17 @@ Examples:
 | Sender | Receiver | Performative | Ontology | Content | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | Dealer | Broker | `INFORM` | empty | `car;retailPrice;stock;reservePrice` | Dealer lists inventory. |
-| Buyer | Broker | `REQUEST` | empty | `desiredCar` | Buyer searches for matching car. |
-| Broker | Buyer | `PROPOSE` | empty | `dealer:price:reserve,...` or `NONE` | Broker returns matching dealers. |
-| Buyer | Dealer | `PROPOSE` | empty | `offerPrice` | Buyer makes an offer. |
-| Dealer | Buyer | `REJECT_PROPOSAL` | empty | `currentTargetPrice` | Dealer rejects and counter-offers. |
-| Dealer | Buyer | `ACCEPT_PROPOSAL` | empty | `acceptedPrice` | Dealer accepts buyer offer. |
-| Buyer | Broker | `CONFIRM` | empty | `price;dealer;car;rounds` | Buyer confirms successful deal. |
-| Buyer | Broker | `CONFIRM` | empty | `NO_DEAL;reason;car;budget` | Buyer reports failed negotiation. |
+| Buyer | Broker | `REQUEST` | `BUYER_SEARCH` | `searchId;desiredCar` | Buyer searches for matching car. |
+| Broker | Buyer | `PROPOSE` | `BROKER_SHORTLIST` | `searchId;dealer:price:reserve,...` or `searchId;NONE` | Broker returns matching dealers. |
+| Buyer | Broker | `PROPOSE` | `BUYER_SHORTLIST` | `sessionId;dealerName;firstOffer;buyerReserve;carModel` | Buyer selects dealer and starts a broker session. |
+| Broker | Dealer | `REQUEST` | `BROKER_INVITE` | `sessionId;buyerName;carModel;offer` | Broker routes the first buyer offer. |
+| Dealer | Broker | `REJECT_PROPOSAL` | `DEALER_COUNTER` | `sessionId;counterPrice` | Dealer counters through broker. |
+| Broker | Buyer | `REJECT_PROPOSAL` | `BROKER_RELAY_COUNTER` | `sessionId;dealerName;counterPrice` | Broker routes dealer counter to buyer. |
+| Buyer | Broker | `PROPOSE` | `BUYER_COUNTER` | `sessionId;newOffer` | Buyer counters through broker. |
+| Broker | Dealer | `PROPOSE` | `BROKER_RELAY_OFFER` | `sessionId;buyerName;carModel;offer` | Broker routes buyer counter to dealer. |
+| Dealer | Broker | `ACCEPT_PROPOSAL` | `DEALER_ACCEPT` | `sessionId;agreedPrice` | Dealer accepts through broker. |
+| Broker | Buyer | `ACCEPT_PROPOSAL` | `BROKER_RELAY_ACCEPT` | `sessionId;dealerName;agreedPrice` | Broker confirms successful deal. |
+| Buyer | Broker | `FAILURE` | `BUYER_WALKAWAY` | `sessionId;reason[;car;budget]` | Buyer reports failed negotiation or pre-session failure. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `REGISTER` | empty | Agent joins cycle updates. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `DEREGISTER` | empty | Agent leaves cycle updates. |
 | Buyer | SpaceControl | `INFORM` | `ACTION_COMPLETED` | empty | Negotiation action completed; cycle may advance. |
@@ -320,17 +328,20 @@ sequenceDiagram
     D->>B: INFORM listing payload
     D->>S: INFORM REGISTER
     U->>U: Wait for START_NEGOTIATION
-    U->>B: REQUEST desired car
     U->>S: INFORM REGISTER
-    B->>U: PROPOSE matching dealers
-    U->>D: PROPOSE buyer offer
-    D-->>U: REJECT_PROPOSAL counter price
+    U->>B: REQUEST BUYER_SEARCH
+    B-->>U: PROPOSE BROKER_SHORTLIST
+    U->>B: PROPOSE BUYER_SHORTLIST
+    B->>D: REQUEST BROKER_INVITE
+    D-->>B: REJECT_PROPOSAL DEALER_COUNTER
+    B-->>U: REJECT_PROPOSAL BROKER_RELAY_COUNTER
     U->>S: INFORM ACTION_COMPLETED
     S-->>U: PROPAGATE CYCLE_UPDATE
     S-->>D: PROPAGATE CYCLE_UPDATE
-    U->>D: PROPOSE revised offer
-    D-->>U: ACCEPT_PROPOSAL final price
-    U->>B: CONFIRM deal details
+    U->>B: PROPOSE BUYER_COUNTER
+    B->>D: PROPOSE BROKER_RELAY_OFFER
+    D-->>B: ACCEPT_PROPOSAL DEALER_ACCEPT
+    B-->>U: ACCEPT_PROPOSAL BROKER_RELAY_ACCEPT
     U->>S: INFORM DEREGISTER
 ```
 
@@ -341,11 +352,11 @@ sequenceDiagram
     participant B as BrokerAgent
     participant U as BuyerAgent
 
-    U->>B: REQUEST desired car
-    B-->>U: PROPOSE NONE
-    U->>B: REQUEST desired car retry
-    B-->>U: PROPOSE NONE
-    U->>B: CONFIRM no deal - no matching car
+    U->>B: REQUEST BUYER_SEARCH
+    B-->>U: PROPOSE BROKER_SHORTLIST NONE
+    U->>B: REQUEST BUYER_SEARCH retry
+    B-->>U: PROPOSE BROKER_SHORTLIST NONE
+    U->>B: FAILURE BUYER_WALKAWAY no matching car
 ```
 
 ### Budget Too Low
@@ -355,10 +366,10 @@ sequenceDiagram
     participant B as BrokerAgent
     participant U as BuyerAgent
 
-    U->>B: REQUEST desired car
-    B-->>U: PROPOSE dealer options
+    U->>B: REQUEST BUYER_SEARCH
+    B-->>U: PROPOSE BROKER_SHORTLIST dealer options
     U->>U: Check reserve prices against maxBudget
-    U->>B: CONFIRM no deal - budget too low
+    U->>B: FAILURE BUYER_WALKAWAY budget too low
 ```
 
 ## Negotiation Model
@@ -532,14 +543,15 @@ BuyerOffer >= DealerTarget
 
 If true:
 
-- Dealer sends `ACCEPT_PROPOSAL`.
-- Buyer sends `CONFIRM` to Broker.
+- Dealer sends `ACCEPT_PROPOSAL` with `DEALER_ACCEPT` to Broker.
+- Broker sends `ACCEPT_PROPOSAL` with `BROKER_RELAY_ACCEPT` to Buyer.
 - Broker records the transaction.
 - Dealer stock decreases by one.
 
 If false:
 
-- Dealer sends `REJECT_PROPOSAL`.
+- Dealer sends `REJECT_PROPOSAL` with `DEALER_COUNTER` to Broker.
+- Broker relays it to Buyer as `BROKER_RELAY_COUNTER`.
 - The reject content contains the dealer's current target price as a counter-offer.
 - Buyer decides whether to continue, accelerate, move to another dealer, or report no deal.
 
@@ -609,12 +621,10 @@ How to use it:
 
 Expected message arrows:
 
-- Buyer to Broker: `REQUEST`
-- Broker to Buyer: `PROPOSE`
-- Buyer to Dealer: `PROPOSE`
-- Dealer to Buyer: `REJECT_PROPOSAL`
-- Dealer to Buyer: `ACCEPT_PROPOSAL`
-- Buyer to Broker: `CONFIRM`
+- Buyer to Broker: `BUYER_SEARCH`, `BUYER_SHORTLIST`, `BUYER_COUNTER`, `BUYER_WALKAWAY`
+- Broker to Buyer: `BROKER_SHORTLIST`, `BROKER_RELAY_COUNTER`, `BROKER_RELAY_ACCEPT`
+- Broker to Dealer: `BROKER_INVITE`, `BROKER_RELAY_OFFER`
+- Dealer to Broker: `DEALER_COUNTER`, `DEALER_ACCEPT`, `DEALER_SOLD_OUT`
 - SpaceControl to Buyer/Dealer: `CYCLE_UPDATE`
 
 If the Sniffer window appears empty, close old Sniffer windows, click `Sniffer` again, then start negotiation. If needed, select agents manually in the Sniffer interface before pressing `Start`.
@@ -637,16 +647,13 @@ Metric meanings:
 | `AvgRounds` | Average negotiation rounds for successful deals. |
 | `SuccessRate` | Deals divided by total attempts. |
 
-Broker revenue is calculated as:
+Broker revenue is calculated from the values in `negotiation-defaults.properties`:
 
 ```text
-BrokerEarning = 50 + (FinalSalePrice * 0.05)
+BrokerEarning = fixedSessionFee + (FinalSalePrice * commissionRate)
 ```
 
-Where:
-
-- `RM50` is the fixed transaction fee.
-- `5%` is the commission from the final sale price.
+By default the fixed session fee is `RM50` and commission is `5%` of the final sale price. The fixed fee is charged when a broker session starts; commission is charged only for successful deals. Pre-session failures such as no matching car or unaffordable reserve prices are logged as no-deals without a session fee.
 
 ## Limitations
 

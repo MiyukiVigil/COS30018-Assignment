@@ -5,6 +5,7 @@ import org.example.MainUI.UILogger;
 import jade.core.AID;
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
+import jade.core.behaviours.TickerBehaviour;
 import jade.lang.acl.ACLMessage;
 
 /**
@@ -24,11 +25,9 @@ import jade.lang.acl.ACLMessage;
 public class BrokerAgent extends Agent {
 
     // ── Fee constants ──────────────────────────────────────────────────────────
-    public static final double FIXED_FEE    = 50.0;
-    public static final double COMMISSION_RATE = 0.05;
-
     // ── State ──────────────────────────────────────────────────────────────────
     private UILogger logger;
+    private final AppConfig appConfig = AppConfig.defaults();
     private final List<CarListing>              inventory    = new ArrayList<>();
     private final Map<String, NegotiationSession> sessions   = new LinkedHashMap<>();
     private final List<Transaction>             transactions = new ArrayList<>();
@@ -95,7 +94,7 @@ public class BrokerAgent extends Agent {
         }
         log("=== BROKER ONLINE ===");
         log(String.format("Fixed Negotiation Fee: RM%.0f | Commission: %.0f%% of sale price",
-                FIXED_FEE, COMMISSION_RATE * 100));
+                appConfig.fixedFee(), appConfig.commissionRate() * 100));
 
         addBehaviour(new CyclicBehaviour() {
             @Override
@@ -115,6 +114,13 @@ public class BrokerAgent extends Agent {
                     case "BUYER_WALKAWAY": handleBuyerWalkaway(msg);   break;
                     default: break; // ignore REGISTER/DEREGISTER/CYCLE_UPDATE leaks
                 }
+            }
+        });
+
+        addBehaviour(new TickerBehaviour(this, appConfig.timeoutScanMillis()) {
+            @Override
+            protected void onTick() {
+                closeTimedOutSessions();
             }
         });
     }
@@ -178,6 +184,17 @@ public class BrokerAgent extends Agent {
         String carModel   = p[4];
         String buyerName  = msg.getSender().getLocalName();
 
+        NegotiationSession existing = sessions.get(sessionId);
+        if (existing != null && existing.status == SessionStatus.NEGOTIATING) {
+            log("ERROR: Duplicate active session rejected: " + sessionId);
+            ACLMessage reject = new ACLMessage(ACLMessage.FAILURE);
+            reject.addReceiver(new AID(buyerName, AID.ISLOCALNAME));
+            reject.setOntology("BROKER_SESSION_REJECTED");
+            reject.setContent(sessionId + ";DUPLICATE_SESSION");
+            send(reject);
+            return;
+        }
+
         NegotiationSession session = new NegotiationSession(
                 sessionId, buyerName, dealerName, carModel, firstOffer, buyerReserve);
         sessions.put(sessionId, session);
@@ -185,13 +202,13 @@ public class BrokerAgent extends Agent {
         int dealerReserve = lookupDealerReserve(dealerName, carModel);
 
         // Charge fixed fee at session start
-        totalRevenue += FIXED_FEE;
+        totalRevenue += appConfig.fixedFee();
         session.feeCharged = true;
         log("SESSION START: " + sessionId + " | Buyer=" + buyerName
             + " | Dealer=" + dealerName + " | Car=" + carModel + " | FirstOffer=RM" + firstOffer
             + " | BuyerReserve=RM" + buyerReserve
             + (dealerReserve > 0 ? " | DealerReserve=RM" + dealerReserve : ""));
-        log("FEE CHARGED: RM" + (int) FIXED_FEE + " | Running Revenue: RM" + (int) totalRevenue);
+        log("FEE CHARGED: RM" + (int) appConfig.fixedFee() + " | Running Revenue: RM" + (int) totalRevenue);
 
         // Invite dealer with buyer's first offer
         ACLMessage invite = new ACLMessage(ACLMessage.REQUEST);
@@ -212,6 +229,10 @@ public class BrokerAgent extends Agent {
         int counter      = Integer.parseInt(p[1]);
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in DEALER_COUNTER: " + sessionId); return; }
+        if (s.status != SessionStatus.NEGOTIATING) {
+            log("ERROR: Ignored DEALER_COUNTER for closed session: " + sessionId);
+            return;
+        }
 
         s.round++;
         s.currentOffer = counter;
@@ -235,10 +256,14 @@ public class BrokerAgent extends Agent {
         int agreedPrice   = Integer.parseInt(p[1]);
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in DEALER_ACCEPT: " + sessionId); return; }
+        if (s.status != SessionStatus.NEGOTIATING) {
+            log("ERROR: Ignored DEALER_ACCEPT for closed session: " + sessionId);
+            return;
+        }
 
         s.round++;
         s.status = SessionStatus.SETTLED;
-        double commission = agreedPrice * COMMISSION_RATE;
+        double commission = agreedPrice * appConfig.commissionRate();
         totalRevenue   += commission;
         totalDealRounds += s.round;
         reduceStock(s.dealerId, s.carModel);
@@ -246,7 +271,7 @@ public class BrokerAgent extends Agent {
 
         log("DEAL SETTLED: " + sessionId + " | Buyer=" + s.buyerId + " | Dealer=" + s.dealerId
                 + " | Car=" + s.carModel + " | Price=RM" + agreedPrice
-                + " | Commission=RM" + (int) commission + " | Fee=RM" + (int) FIXED_FEE + " (charged at start)");
+                + " | Commission=RM" + (int) commission + " | Fee=RM" + (int) appConfig.fixedFee() + " (charged at start)");
         log("REVENUE: +RM" + (int) commission + " commission | Total: RM" + (int) totalRevenue);
         log("TOTAL TRANSACTIONS: " + transactions.size());
         logPerformanceMetrics();
@@ -269,6 +294,10 @@ public class BrokerAgent extends Agent {
         int newOffer     = Integer.parseInt(p[1]);
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in BUYER_COUNTER: " + sessionId); return; }
+        if (s.status != SessionStatus.NEGOTIATING) {
+            log("ERROR: Ignored BUYER_COUNTER for closed session: " + sessionId);
+            return;
+        }
 
         s.currentOffer = newOffer;
         log("RELAY OFFER: " + sessionId + " | Buyer=" + s.buyerId
@@ -286,15 +315,28 @@ public class BrokerAgent extends Agent {
      * → Mark session FAILED. Fixed fee already collected.
      */
     private void handleBuyerWalkaway(ACLMessage msg) {
-        String[] p = msg.getContent().split(";", 2);
+        String[] p = msg.getContent().split(";");
         String sessionId = p[0];
         String reason    = p.length > 1 ? p[1] : "UNKNOWN";
         NegotiationSession s = sessions.get(sessionId);
         if (s != null) {
+            if (s.status != SessionStatus.NEGOTIATING) {
+                log("ERROR: Ignored duplicate no-deal for closed session: " + sessionId);
+                return;
+            }
             s.status = SessionStatus.FAILED;
             noDealCount++;
             log("NO DEAL: " + sessionId + " | Reason=" + reason
                     + " | Buyer=" + s.buyerId + " | Car=" + s.carModel);
+            logPerformanceMetrics();
+        } else {
+            String car = p.length > 2 ? p[2] : "UNKNOWN";
+            String budget = p.length > 3 ? p[3] : "UNKNOWN";
+            noDealCount++;
+            log("NO DEAL: " + sessionId + " | Reason=" + reason
+                    + " | Buyer=" + msg.getSender().getLocalName()
+                    + " | Car=" + car + " | Budget=RM" + budget
+                    + " | No session fee charged");
             logPerformanceMetrics();
         }
     }
@@ -349,6 +391,30 @@ public class BrokerAgent extends Agent {
             }
         }
         return -1;
+    }
+
+    private void closeTimedOutSessions() {
+        long now = System.currentTimeMillis();
+        for (NegotiationSession s : sessions.values()) {
+            if (s.status != SessionStatus.NEGOTIATING) {
+                continue;
+            }
+            if (now - s.startTime < appConfig.sessionTimeoutMillis()) {
+                continue;
+            }
+
+            s.status = SessionStatus.TIMEOUT;
+            noDealCount++;
+            log("NO DEAL: " + s.sessionId + " | Reason=TIMEOUT | Buyer=" + s.buyerId
+                    + " | Dealer=" + s.dealerId + " | Car=" + s.carModel);
+            logPerformanceMetrics();
+
+            ACLMessage notify = new ACLMessage(ACLMessage.FAILURE);
+            notify.addReceiver(new AID(s.buyerId, AID.ISLOCALNAME));
+            notify.setOntology("BROKER_SESSION_REJECTED");
+            notify.setContent(s.sessionId + ";TIMEOUT");
+            send(notify);
+        }
     }
 
     private void logPerformanceMetrics() {

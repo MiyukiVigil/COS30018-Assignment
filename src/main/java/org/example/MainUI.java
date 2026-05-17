@@ -5,13 +5,20 @@ import java.io.InputStream;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.example.agents.AppConfig;
 import org.example.agents.NegotiationConfig;
 
 import jade.core.Profile;
@@ -21,15 +28,23 @@ import jade.wrapper.ContainerController;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
+import javafx.geometry.Side;
+import javafx.scene.Node;
 import javafx.scene.Scene;
+import javafx.scene.chart.Axis;
+import javafx.scene.chart.BarChart;
+import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.Chart;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.StackedBarChart;
 import javafx.scene.chart.XYChart;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
@@ -64,24 +79,22 @@ public class MainUI extends Application {
     private Label dealerStatusLabel = new Label();
     private Label updateBuyerStatus = new Label();
     private int currentCycle = 0;
-    private Map<String, XYChart.Series<Number, Number>> seriesMap = new HashMap<>();
     private final Map<String, SessionMeta> sessionMetaMap = new HashMap<>();
     private final Map<String, List<TrajectoryPoint>> sessionPoints = new HashMap<>();
     private final Map<String, List<TrajectoryPoint>> agentPoints = new HashMap<>();
     private final Map<String, Double> sessionLastPrice = new HashMap<>();
-    private LineChart<Number, Number> priceChart;
-    private final List<LineChart<Number, Number>> activeCharts = new ArrayList<>();
-    private ComboBox<String> chartModeSelect;
-    private ComboBox<String> chartAgentSelect;
-    private ComboBox<String> chartSessionSelect;
-    private ComboBox<String> chartCarFilter;
-    private CheckBox chartMarkersToggle;
-    private CheckBox chartBaselinesToggle;
-    private CheckBox chartAllHistoryToggle;
-    private Slider chartHistorySlider;
-    private Label chartHistoryLabel;
-    private TrajectoryMode chartMode = TrajectoryMode.MARKET;
-    private int chartHistoryLimit = 60;
+    private final Map<String, ListingViewModel> listingModelMap = new LinkedHashMap<>();
+    private VisualiserView activeVisualiserView = VisualiserView.MARKET;
+    private final Map<VisualiserView, Button> visualiserButtons = new HashMap<>();
+    private StackPane visualiserContentPane;
+    private VBox marketVisualiserPane;
+    private VBox sessionVisualiserPane;
+    private VBox agentVisualiserPane;
+    private ScrollPane marketVisualiserScroll;
+    private ScrollPane sessionVisualiserScroll;
+    private ScrollPane agentVisualiserScroll;
+    private ComboBox<String> visualiserSessionSelect;
+    private ComboBox<String> visualiserAgentTypeSelect;
     private Button playPauseBtn;
     private boolean isAutoPlay = true;
     private ComboBox<String> strategyChoice;
@@ -113,6 +126,7 @@ public class MainUI extends Application {
     private List<String> failedDeals = new ArrayList<>();
     private TextArea failuresArea = new TextArea();
     private TextArea sessionsArea = new TextArea();
+    private TextArea dashboardEventsArea;
     private Label activeSessionsLabel = new Label("0");
     private Label activeSessionsLabelMini = new Label("0");
     private Label fixedFeesLabel = new Label("RM 0");
@@ -123,26 +137,26 @@ public class MainUI extends Application {
     private int activeSessions = 0;
     private final AtomicLong commandAgentCounter = new AtomicLong();
     private final AtomicLong demoScenarioCounter = new AtomicLong();
+    private final AppConfig appConfig = AppConfig.defaults();
+    private StackPane workspacePane;
+    private final Map<String, Button> navigationButtons = new HashMap<>();
     private static final Pattern RM_AMOUNT_PATTERN = Pattern.compile("RM\\s*(\\d+)");
 
-    // Minimalist Neutral Palette
-    private static final String PRIMARY_BLUE = "#111827";
-    private static final String ACCENT_BLUE = "#334155";
+    // Bright academic demo palette
+    private static final String PRIMARY_BLUE = "#1e3a8a";
+    private static final String ACCENT_BLUE = "#2563eb";
     private static final String SUCCESS_GREEN = "#16a34a";
-    private static final String WARNING_ORANGE = "#d97706";
-    private static final String ERROR_RED = "#dc2626";
-    private static final String LIGHT_GRAY = "#f3f4f6";
+    private static final String WARNING_ORANGE = "#f59e0b";
+    private static final String ERROR_RED = "#e11d48";
+    private static final String LIGHT_GRAY = "#eff6ff";
     private static final String DARK_TEXT = "#111827";
-    private static final String TEXT_MUTED = "#6b7280";
+    private static final String TEXT_MUTED = "#475569";
     private static final String SURFACE = "#ffffff";
-    private static final String SURFACE_ALT = "#f9fafb";
-    private static final String BORDER_SUBTLE = "#e5e7eb";
+    private static final String SURFACE_ALT = "#f8fafc";
+    private static final String BORDER_SUBTLE = "#bfdbfe";
     private static final String FONT_FAMILY = "'Poppins', 'Segoe UI', Arial";
     private static final String FONT_WEIGHT_MEDIUM = "500";
-    private static final String SOFT_SHADOW = "dropshadow(gaussian, rgba(15,23,42,0.06), 12, 0, 0, 3)";
-    private static final String ALL_AGENTS = "All agents";
-    private static final String ALL_SESSIONS = "All sessions";
-    private static final String ALL_CARS = "All cars";
+    private static final String SOFT_SHADOW = "dropshadow(gaussian, rgba(30,64,175,0.10), 14, 0, 0, 4)";
 
     // Popular Car Models Database
     private static final String[] CAR_MODELS = {
@@ -160,10 +174,10 @@ public class MainUI extends Application {
             "Suzuki Swift", "Suzuki Ertiga", "Suzuki Vitara"
     };
 
-    private enum TrajectoryMode {
-        AGENT,
+    private enum VisualiserView {
+        MARKET,
         SESSION,
-        MARKET
+        AGENT
     }
 
     private enum TrajectoryEvent {
@@ -202,6 +216,10 @@ public class MainUI extends Application {
         private Integer buyerReserve;
         private Integer dealerReserve;
         private Integer firstOffer;
+        private String outcomeStatus;
+        private Double outcomePrice;
+        private Integer outcomeCycle;
+        private String failureReason;
 
         private SessionMeta(String sessionId) {
             this.sessionId = sessionId;
@@ -257,6 +275,11 @@ public class MainUI extends Application {
                         || isSessionStart || isFeeCharged || isDealSettled
                         || isRevenue || isNoDeal || isPerformance || isNegotiationAction) {
                     logArea.appendText(formattedMsg);
+                    if (dashboardEventsArea != null && (isSessionStart || isDealSettled || isNoDeal || isRelay
+                            || isPerformance || isFeeCharged)) {
+                        dashboardEventsArea.appendText(formattedMsg);
+                        dashboardEventsArea.setScrollTop(Double.MAX_VALUE);
+                    }
                 }
 
                 // ── Stat counters ─────────────────────────────────────────────
@@ -365,27 +388,26 @@ public class MainUI extends Application {
             SessionMeta meta = parseSessionStart(msg);
             if (meta != null) {
                 sessionMetaMap.put(meta.sessionId, meta);
-                refreshTrajectoryFilters();
                 if (meta.firstOffer != null) {
                     TrajectoryPoint point = new TrajectoryPoint(currentCycle, meta.firstOffer, meta.buyer,
                             meta.sessionId, meta.car, TrajectoryEvent.START);
                     storeTrajectoryPoint(point);
                 }
-                refreshTrajectoryChart();
+                refreshNegotiationVisualiser();
                 return;
             }
 
             TrajectoryPoint brokerPoint = parseBrokerTrajectoryPoint(msg);
             if (brokerPoint != null) {
                 storeTrajectoryPoint(brokerPoint);
-                refreshTrajectoryChart();
+                refreshNegotiationVisualiser();
                 return;
             }
 
             TrajectoryPoint agentPoint = parseAgentPricePoint(msg);
             if (agentPoint != null) {
                 storeTrajectoryPoint(agentPoint);
-                refreshTrajectoryChart();
+                refreshNegotiationVisualiser();
             }
         } catch (Exception e) {
             System.err.println("Trajectory ingest error: " + e.getMessage());
@@ -483,6 +505,10 @@ public class MainUI extends Application {
                 return null;
             SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
             hydrateSessionMeta(meta, payload);
+            meta.outcomeStatus = "ACCEPTED";
+            meta.outcomePrice = price.doubleValue();
+            meta.outcomeCycle = currentCycle;
+            meta.failureReason = null;
             return new TrajectoryPoint(currentCycle, price, meta.dealer, sessionId, meta.car,
                     TrajectoryEvent.ACCEPT);
         }
@@ -497,6 +523,10 @@ public class MainUI extends Application {
             Double lastPrice = sessionLastPrice.get(sessionId);
             if (lastPrice == null)
                 return null;
+            meta.outcomeStatus = "NO DEAL";
+            meta.outcomePrice = lastPrice;
+            meta.outcomeCycle = currentCycle;
+            meta.failureReason = extractReason(payload);
             return new TrajectoryPoint(currentCycle, lastPrice, meta.buyer, sessionId, meta.car,
                     TrajectoryEvent.WALKAWAY);
         }
@@ -544,6 +574,9 @@ public class MainUI extends Application {
     }
 
     private void hydrateSessionMeta(SessionMeta meta, String payload) {
+        if (hydrateSessionMetaFromFields(meta, payload)) {
+            return;
+        }
         String[] segments = payload.split("\\|");
         for (String segment : segments) {
             String seg = segment.trim();
@@ -572,7 +605,137 @@ public class MainUI extends Application {
             if (seg.startsWith("Car=")) {
                 meta.car = seg.substring(4).trim();
             }
+            if (seg.startsWith("Price=")) {
+                Integer price = parseMoneyValue(seg.substring(6).trim());
+                if (price != null) {
+                    meta.outcomePrice = price.doubleValue();
+                }
+            }
+            if (seg.startsWith("Reason=")) {
+                meta.failureReason = seg.substring(7).trim();
+            }
         }
+    }
+
+    private boolean hydrateSessionMetaFromFields(SessionMeta meta, String payload) {
+        String buyer = extractBrokerField(payload, "Buyer");
+        String dealer = extractBrokerField(payload, "Dealer");
+        String car = extractBrokerField(payload, "Car");
+        String price = extractBrokerField(payload, "Price");
+        String reason = extractBrokerField(payload, "Reason");
+
+        if (buyer != null) {
+            meta.buyer = buyer;
+        }
+        if (dealer != null) {
+            meta.dealer = dealer;
+        }
+        if (car != null) {
+            meta.car = car;
+        }
+        if (price != null) {
+            Integer parsedPrice = parseMoneyValue(price);
+            if (parsedPrice != null) {
+                meta.outcomePrice = parsedPrice.doubleValue();
+            }
+        }
+        if (reason != null) {
+            meta.failureReason = reason;
+        }
+        return true;
+    }
+
+    private String extractBrokerField(String payload, String key) {
+        String prefix = key + "=";
+        String[] segments = payload.split("\\|");
+        for (String segment : segments) {
+            String seg = segment.trim();
+            int idx = seg.indexOf(prefix);
+            if (idx < 0) {
+                continue;
+            }
+            String value = seg.substring(idx + prefix.length()).trim();
+            value = trimBrokerRelationship(value);
+            value = stripKnownFieldPrefix(value);
+            return value.isBlank() ? null : value;
+        }
+        return null;
+    }
+
+    private String trimBrokerRelationship(String value) {
+        String cleaned = value == null ? "" : value.trim();
+        String[] arrows = { "\u2192", "\u00e2\u2020\u2019", "->" };
+        for (String arrow : arrows) {
+            int arrowIdx = cleaned.indexOf(arrow);
+            if (arrowIdx >= 0) {
+                cleaned = cleaned.substring(0, arrowIdx).trim();
+            }
+        }
+        return cleaned;
+    }
+
+    private String stripKnownFieldPrefix(String value) {
+        String cleaned = value == null ? "" : value.trim();
+        String[] prefixes = { "Buyer=", "Dealer=", "Car=", "Price=", "Reason=" };
+        boolean changed;
+        do {
+            changed = false;
+            for (String prefix : prefixes) {
+                if (cleaned.startsWith(prefix)) {
+                    cleaned = cleaned.substring(prefix.length()).trim();
+                    changed = true;
+                }
+            }
+        } while (changed);
+        return cleaned;
+    }
+
+    private static class SessionViewModel {
+        private String sessionId;
+        private String buyer;
+        private String dealer;
+        private String car;
+        private Integer listPrice;
+        private Integer buyerReserve;
+        private Integer dealerReserve;
+        private Integer firstOffer;
+        private Double latestPrice;
+        private String outcome;
+        private String failureReason;
+        private int rounds;
+        private double totalConcession;
+        private final List<TrajectoryPoint> points = new ArrayList<>();
+    }
+
+    private static class AgentViewModel {
+        private String name;
+        private String type;
+        private int sessions;
+        private int accepted;
+        private int rejected;
+        private int pending;
+        private double averageDealPrice;
+        private double averageConcession;
+    }
+
+    private static class ListingViewModel {
+        private String car;
+        private String dealer;
+        private Integer listPrice;
+        private Integer reserve;
+        private int activeBuyers;
+        private String status;
+    }
+
+    private String extractReason(String payload) {
+        String[] segments = payload.split("\\|");
+        for (String segment : segments) {
+            String seg = segment.trim();
+            if (seg.startsWith("Reason=")) {
+                return seg.substring(7).trim();
+            }
+        }
+        return null;
     }
 
     private String extractSessionId(String payload) {
@@ -618,49 +781,115 @@ public class MainUI extends Application {
     }
 
     private VBox createMainContent(UILogger logger) {
-        TabPane tp = new TabPane();
-        tp.setStyle("-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; "
-                + "-fx-background-color: transparent; -fx-tab-min-height: 40; -fx-tab-max-height: 40;");
-
-        Tab dashboardTab = new Tab("Dashboard", createBrokerView());
-        dashboardTab.setClosable(false);
-        Tab buyerTab = new Tab("Buyer Portal", createBuyerView(logger));
-        buyerTab.setClosable(false);
-        Tab dealerTab = new Tab("Dealer Portal", createDealerView(logger));
-        dealerTab.setClosable(false);
-        Tab manualTab = new Tab("Manual Mode", createManualPlayView());
-        manualTab.setClosable(false);
-        Tab sessionsTab = new Tab("Sessions", createSessionsView());
-        sessionsTab.setClosable(false);
-        Tab analysisTab = new Tab("Analytics", createMarketAnalysisView());
-        analysisTab.setClosable(false);
-        Tab failuresTab = new Tab("Failures", createFailuresView());
-        failuresTab.setClosable(false);
-        Tab logTab = new Tab("Activity Log", createActivityLogView());
-        logTab.setClosable(false);
-        tp.getTabs().addAll(dashboardTab, buyerTab, dealerTab, manualTab, sessionsTab, analysisTab, failuresTab,
-                logTab);
-        tp.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-
         VBox root = new VBox(0);
         root.setStyle("-fx-background-color: " + LIGHT_GRAY + "; -fx-font-family: " + FONT_FAMILY
                 + "; -fx-font-weight: " + FONT_WEIGHT_MEDIUM + ";");
-        VBox tabArea = new VBox(tp);
-        tabArea.setPadding(new Insets(0, 20, 20, 20));
-        VBox.setVgrow(tp, Priority.ALWAYS);
-        VBox.setVgrow(tabArea, Priority.ALWAYS);
-        root.getChildren().addAll(createAppHeader(), createActionBar(), tabArea);
+
+        workspacePane = new StackPane();
+        workspacePane.setStyle("-fx-background-color: transparent;");
+        workspacePane.getChildren().addAll(
+                createWorkspaceView("Dashboard", createBrokerView()),
+                createWorkspaceView("Participants", createParticipantsView(logger)),
+                createWorkspaceView("Manual Negotiation", createManualPlayView()),
+                createWorkspaceView("Sessions", createSessionsView()),
+                createWorkspaceView("Analytics", createMarketAnalysisView()),
+                createWorkspaceView("Logs", createLogsView()));
+
+        VBox sidebar = createSidebar();
+        HBox shell = new HBox(0, sidebar, workspacePane);
+        shell.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
+        HBox.setHgrow(workspacePane, Priority.ALWAYS);
+        VBox.setVgrow(shell, Priority.ALWAYS);
+
+        root.getChildren().addAll(createAppHeader(), createActionBar(), shell);
+        showWorkspace("Dashboard");
         return root;
+    }
+
+    private Node createWorkspaceView(String key, Node content) {
+        StackPane wrapper = new StackPane(content);
+        wrapper.setUserData(key);
+        wrapper.setVisible(false);
+        wrapper.setManaged(false);
+        StackPane.setMargin(content, new Insets(0));
+        return wrapper;
+    }
+
+    private VBox createSidebar() {
+        navigationButtons.clear();
+
+        Label brand = new Label("Broker Console");
+        brand.setStyle("-fx-font-size: 16; -fx-font-weight: 800; -fx-text-fill: white;");
+        Label sub = new Label("Car negotiation demo");
+        sub.setStyle("-fx-font-size: 11; -fx-text-fill: #bfdbfe;");
+        VBox brandBox = new VBox(2, brand, sub);
+        brandBox.setPadding(new Insets(6, 8, 18, 8));
+
+        VBox nav = new VBox(8);
+        nav.getChildren().addAll(
+                createNavigationButton("Dashboard", "Overview, KPIs, graph"),
+                createNavigationButton("Participants", "Buyers and dealers"),
+                createNavigationButton("Manual Negotiation", "Guided negotiation"),
+                createNavigationButton("Sessions", "Deals and fees"),
+                createNavigationButton("Analytics", "Settings and protocol"),
+                createNavigationButton("Logs", "Activity and failures"));
+
+        Region spacer = new Region();
+        VBox.setVgrow(spacer, Priority.ALWAYS);
+
+        Label footer = new Label("Poppins UI\nJADE ACL routed");
+        footer.setStyle("-fx-font-size: 11; -fx-text-fill: #bfdbfe; -fx-line-spacing: 2;");
+
+        VBox sidebar = new VBox(8, brandBox, nav, spacer, footer);
+        sidebar.setPadding(new Insets(18, 14, 18, 14));
+        sidebar.setPrefWidth(230);
+        sidebar.setMinWidth(220);
+        sidebar.setStyle("-fx-background-color: linear-gradient(to bottom, #1e3a8a, #312e81);"
+                + "-fx-border-color: #c7d2fe; -fx-border-width: 0 1 0 0;");
+        return sidebar;
+    }
+
+    private Button createNavigationButton(String title, String subtitle) {
+        Button btn = new Button(title + "\n" + subtitle);
+        btn.setMaxWidth(Double.MAX_VALUE);
+        btn.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        btn.setStyle(navButtonStyle(false));
+        btn.setOnAction(e -> showWorkspace(title));
+        navigationButtons.put(title, btn);
+        return btn;
+    }
+
+    private String navButtonStyle(boolean active) {
+        return "-fx-font-size: 12; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: 700;"
+                + "-fx-padding: 10 12; -fx-background-radius: 10; -fx-border-radius: 10;"
+                + "-fx-background-color: " + (active ? "white" : "rgba(255,255,255,0.10)") + ";"
+                + "-fx-text-fill: " + (active ? "#1e3a8a" : "white") + ";"
+                + "-fx-cursor: hand; -fx-line-spacing: 2;";
+    }
+
+    private void showWorkspace(String key) {
+        if (workspacePane == null) {
+            return;
+        }
+        for (Node child : workspacePane.getChildren()) {
+            boolean selected = key.equals(String.valueOf(child.getUserData()));
+            child.setVisible(selected);
+            child.setManaged(selected);
+        }
+        for (Map.Entry<String, Button> entry : navigationButtons.entrySet()) {
+            entry.getValue().setStyle(navButtonStyle(entry.getKey().equals(key)));
+        }
+        refreshNegotiationVisualiser();
     }
 
     private VBox createAppHeader() {
         Region stripe = new Region();
         stripe.setPrefWidth(5);
         stripe.setMinWidth(5);
-        stripe.setStyle("-fx-background-color: linear-gradient(to bottom, " + ACCENT_BLUE + ", #8b5cf6);");
+        stripe.setStyle("-fx-background-color: " + ACCENT_BLUE + ";");
 
         Label title = new Label("Automated Car Negotiation System");
-        title.setStyle("-fx-font-size: 22; -fx-font-weight: 700; -fx-text-fill: " + DARK_TEXT + ";");
+        title.setStyle("-fx-font-size: 22; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
         Label subtitle = new Label(
                 "JADE broker-routed marketplace  ·  session-based negotiation  ·  real-time metrics");
         subtitle.setStyle("-fx-font-size: 12; -fx-text-fill: " + TEXT_MUTED + ";");
@@ -780,6 +1009,62 @@ public class MainUI extends Application {
         return prefix + "-" + System.nanoTime() + "-" + commandAgentCounter.incrementAndGet();
     }
 
+    private VBox createParticipantsView(UILogger logger) {
+        VBox page = createPage("Participants", "Create dealers first, then add buyers into the broker-routed market.");
+        HBox columns = new HBox(18);
+
+        VBox dealer = createDealerView(logger);
+        VBox buyer = createBuyerView(logger);
+        dealer.setPadding(new Insets(0));
+        buyer.setPadding(new Insets(0));
+        dealer.setStyle("-fx-background-color: transparent;");
+        buyer.setStyle("-fx-background-color: transparent;");
+
+        columns.getChildren().addAll(dealer, buyer);
+        HBox.setHgrow(dealer, Priority.ALWAYS);
+        HBox.setHgrow(buyer, Priority.ALWAYS);
+
+        ScrollPane scroll = new ScrollPane(columns);
+        scroll.setFitToWidth(true);
+        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+        page.getChildren().add(scroll);
+        VBox.setVgrow(scroll, Priority.ALWAYS);
+        return page;
+    }
+
+    private VBox createLogsView() {
+        VBox page = createPage("Logs", "Monitor broker activity and failed negotiations in one place.");
+        HBox columns = new HBox(18);
+
+        VBox activity = createActivityLogView();
+        VBox failures = createFailuresView();
+        activity.setPadding(new Insets(0));
+        failures.setPadding(new Insets(0));
+        activity.setStyle("-fx-background-color: transparent;");
+        failures.setStyle("-fx-background-color: transparent;");
+        activity.setMinWidth(520);
+        failures.setMinWidth(360);
+
+        columns.getChildren().addAll(activity, failures);
+        HBox.setHgrow(activity, Priority.ALWAYS);
+        HBox.setHgrow(failures, Priority.ALWAYS);
+        page.getChildren().add(columns);
+        VBox.setVgrow(columns, Priority.ALWAYS);
+        return page;
+    }
+
+    private VBox createPage(String title, String subtitle) {
+        VBox page = new VBox(16);
+        page.setPadding(new Insets(22));
+        page.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
+        Label titleLabel = new Label(title);
+        titleLabel.setStyle("-fx-font-size: 24; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        Label subtitleLabel = new Label(subtitle);
+        subtitleLabel.setStyle("-fx-font-size: 12; -fx-font-weight: 500; -fx-text-fill: " + TEXT_MUTED + ";");
+        page.getChildren().add(new VBox(2, titleLabel, subtitleLabel));
+        return page;
+    }
+
     private VBox createBrokerView() {
         VBox box = new VBox(16);
         box.setPadding(new Insets(20));
@@ -807,142 +1092,35 @@ public class MainUI extends Application {
         }
         VBox statsSection = new VBox(10, statsRow1, statsRow2);
 
-        // ── Chart ─────────────────────────────────────────────────────────────
-        NumberAxis xAxis = new NumberAxis();
-        xAxis.setLabel("Cycle");
-        xAxis.setForceZeroInRange(false);
-        NumberAxis yAxis = new NumberAxis();
-        yAxis.setLabel("Price (RM)");
-        yAxis.setForceZeroInRange(false);
+        dashboardEventsArea = new TextArea();
+        dashboardEventsArea.setEditable(false);
+        dashboardEventsArea.setWrapText(true);
+        dashboardEventsArea.setPrefRowCount(9);
+        dashboardEventsArea.setStyle("-fx-font-size: 11; -fx-font-family: " + FONT_FAMILY + ";"
+                + "-fx-control-inner-background: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
+                + "; -fx-border-width: 1; -fx-border-radius: 10; -fx-background-radius: 10;");
 
-        priceChart = new LineChart<>(xAxis, yAxis);
-        priceChart.setAnimated(false);
-        priceChart.setTitle(null);
-        priceChart.setLegendVisible(false);
-        priceChart.setStyle("-fx-background-color: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-background-radius: 12; -fx-border-radius: 12;");
-        priceChart.setMinHeight(280);
-        activeCharts.add(priceChart);
-        VBox.setVgrow(priceChart, Priority.ALWAYS);
-
-        // Chart header row: title + expand button
-        Label chartTitle = new Label("Negotiation Price Trajectory");
-        chartTitle.setStyle("-fx-font-size: 14; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
-        Label chartHint = new Label("Each line tracks one agent's offer price per cycle.");
-        chartHint.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
-        VBox chartTitleBox = new VBox(2, chartTitle, chartHint);
-
-        Button expandChartBtn = new Button("⤢ Expand");
-        expandChartBtn.setStyle(
-                "-fx-font-size: 11; -fx-font-weight: 600; -fx-padding: 5 12; "
-                        + "-fx-background-color: " + ACCENT_BLUE + "; -fx-text-fill: white; "
-                        + "-fx-background-radius: 7; -fx-cursor: hand;");
-        expandChartBtn.setOnMouseEntered(e -> expandChartBtn.setOpacity(0.82));
-        expandChartBtn.setOnMouseExited(e -> expandChartBtn.setOpacity(1.0));
-        expandChartBtn.setOnAction(e -> openChartInNewWindow());
-
-        Region chartHeaderSpacer = new Region();
-        HBox.setHgrow(chartHeaderSpacer, Priority.ALWAYS);
-        HBox chartHeaderRow = new HBox(8, chartTitleBox, chartHeaderSpacer, expandChartBtn);
-        chartHeaderRow.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-
-        String comboStyle = "-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; -fx-background-color: " + SURFACE
-                + "; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-radius: 6; -fx-background-radius: 6; -fx-padding: 2 6;";
-
-        chartModeSelect = new ComboBox<>();
-        chartModeSelect.getItems().addAll("Market View", "Agent View", "Session View");
-        chartModeSelect.setValue("Market View");
-        chartModeSelect.setStyle(comboStyle);
-        chartModeSelect.setOnAction(e -> {
-            String val = chartModeSelect.getValue();
-            if (val.equals("Market View")) chartMode = TrajectoryMode.MARKET;
-            else if (val.equals("Session View")) chartMode = TrajectoryMode.SESSION;
-            else chartMode = TrajectoryMode.AGENT;
-            refreshTrajectoryFilters();
-            refreshTrajectoryChart();
-        });
-
-        chartAgentSelect = new ComboBox<>();
-        chartAgentSelect.getItems().add(ALL_AGENTS);
-        chartAgentSelect.setValue(ALL_AGENTS);
-        chartAgentSelect.setStyle(comboStyle);
-        chartAgentSelect.setOnAction(e -> refreshTrajectoryChart());
-
-        chartSessionSelect = new ComboBox<>();
-        chartSessionSelect.getItems().add(ALL_SESSIONS);
-        chartSessionSelect.setValue(ALL_SESSIONS);
-        chartSessionSelect.setStyle(comboStyle);
-        chartSessionSelect.setOnAction(e -> refreshTrajectoryChart());
-
-        chartCarFilter = new ComboBox<>();
-        chartCarFilter.getItems().add(ALL_CARS);
-        chartCarFilter.setValue(ALL_CARS);
-        chartCarFilter.setStyle(comboStyle);
-        chartCarFilter.setOnAction(e -> refreshTrajectoryChart());
-
-        String checkStyle = "-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: 500;";
-
-        chartMarkersToggle = new CheckBox("Show Markers");
-        chartMarkersToggle.setStyle(checkStyle);
-        chartMarkersToggle.setOnAction(e -> refreshTrajectoryChart());
-
-        chartBaselinesToggle = new CheckBox("Show Baselines");
-        chartBaselinesToggle.setStyle(checkStyle);
-        chartBaselinesToggle.setOnAction(e -> refreshTrajectoryChart());
-
-        chartAllHistoryToggle = new CheckBox("Full History");
-        chartAllHistoryToggle.setStyle(checkStyle);
-        chartAllHistoryToggle.setOnAction(e -> {
-            chartHistorySlider.setDisable(chartAllHistoryToggle.isSelected());
-            refreshTrajectoryChart();
-        });
-
-        chartHistorySlider = new Slider(10, 500, chartHistoryLimit);
-        chartHistorySlider.setPrefWidth(140);
-        chartHistorySlider.valueProperty().addListener((obs, oldVal, newVal) -> {
-            chartHistoryLimit = newVal.intValue();
-            chartHistoryLabel.setText("History Limit: " + chartHistoryLimit);
-            if (!chartHistorySlider.isValueChanging()) {
-                refreshTrajectoryChart();
-            }
-        });
-        chartHistorySlider.setOnMouseReleased(e -> refreshTrajectoryChart());
-        chartHistoryLabel = new Label("History Limit: " + chartHistoryLimit);
-        chartHistoryLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 500;");
-
-        Label modeLbl = new Label("Mode:");
-        modeLbl.setStyle(checkStyle);
-        Label agentLbl = new Label("Agent:");
-        agentLbl.setStyle(checkStyle);
-        Label sessionLbl = new Label("Session:");
-        sessionLbl.setStyle(checkStyle);
-        Label carLbl = new Label("Car:");
-        carLbl.setStyle(checkStyle);
-
-        HBox controlsRow1 = new HBox(12, modeLbl, chartModeSelect, agentLbl, chartAgentSelect, sessionLbl,
-                chartSessionSelect, carLbl, chartCarFilter);
-        controlsRow1.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-
-        HBox controlsRow2 = new HBox(18, chartMarkersToggle, chartBaselinesToggle,
-                new Separator(javafx.geometry.Orientation.VERTICAL), chartHistoryLabel, chartHistorySlider,
-                chartAllHistoryToggle);
-        controlsRow2.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-
-        VBox chartControlsBox = new VBox(12, controlsRow1, controlsRow2);
-        chartControlsBox.setPadding(new Insets(10, 10, 10, 10));
-        chartControlsBox
-                .setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8; -fx-border-color: "
-                        + BORDER_SUBTLE + "; -fx-border-radius: 8; -fx-border-width: 1;");
-
-        VBox chartSection = new VBox(6, chartHeaderRow, chartControlsBox, priceChart);
-        chartSection.setPadding(new Insets(14));
-        chartSection.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
+        VBox brokerFeed = new VBox(8, createSectionLabel("Broker event feed"), dashboardEventsArea);
+        brokerFeed.setPadding(new Insets(14));
+        brokerFeed.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
                 + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
-        VBox.setVgrow(chartSection, Priority.ALWAYS);
+
+        VBox checklist = new VBox(8,
+                createSectionLabel("Demo checklist"),
+                createChecklistItem("1. Register dealers or use Demo Setup"),
+                createChecklistItem("2. Add waiting buyers"),
+                createChecklistItem("3. Press Start and watch broker-routed offers"),
+                createChecklistItem("4. Use Session Detail to explain a deal"));
+        checklist.setPadding(new Insets(14));
+        checklist.setStyle("-fx-background-color: #ecfeff; -fx-background-radius: 12;"
+                + "-fx-border-color: #67e8f9; -fx-border-width: 1;");
+
+        // ── Chart ─────────────────────────────────────────────────────────────
+        VBox chartSection = createNegotiationVisualiser();
+
 
         // ── Left column: stats ───────────────────────────────
-        VBox leftCol = new VBox(14, statsSection);
+        VBox leftCol = new VBox(14, statsSection, brokerFeed, checklist);
         leftCol.setMinWidth(420);
         leftCol.setMaxWidth(520);
 
@@ -956,43 +1134,1164 @@ public class MainUI extends Application {
         return box;
     }
 
-    /** Opens the negotiation price chart in a standalone resizable window. */
-    private void openChartInNewWindow() {
-        Stage chartStage = new Stage();
-        chartStage.setTitle("Negotiation Price Trajectory — Expanded View");
+    private VBox createNegotiationVisualiser() {
+        visualiserButtons.clear();
 
-        NumberAxis x2 = new NumberAxis();
-        x2.setLabel("Cycle");
-        x2.setForceZeroInRange(false);
-        NumberAxis y2 = new NumberAxis();
-        y2.setLabel("Price (RM)");
-        y2.setForceZeroInRange(false);
+        Label title = new Label("Negotiation Visualiser");
+        title.setStyle("-fx-font-size: 15; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        Label hint = new Label("Market, session, and agent views built from live broker-routed negotiation logs.");
+        hint.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
+        VBox titleBox = new VBox(2, title, hint);
 
-        LineChart<Number, Number> detachedChart = new LineChart<>(x2, y2);
-        detachedChart.setAnimated(false);
-        detachedChart.setTitle(null);
-        detachedChart.setLegendVisible(false);
-        detachedChart.setStyle("-fx-background-color: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-background-radius: 12; -fx-border-radius: 12;");
+        HBox tabs = new HBox(6,
+                createVisualiserTab("Market View", VisualiserView.MARKET),
+                createVisualiserTab("Session View", VisualiserView.SESSION),
+                createVisualiserTab("Agent View", VisualiserView.AGENT));
+        tabs.setAlignment(javafx.geometry.Pos.CENTER_RIGHT);
 
-        activeCharts.add(detachedChart);
-        chartStage.setOnCloseRequest(e -> activeCharts.remove(detachedChart));
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox header = new HBox(12, titleBox, spacer, tabs);
+        header.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
 
-        Label hint = new Label(
-                "This expanded view instantly mirrors all filters and settings from the main dashboard chart.");
-        hint.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + "; -fx-padding: 0 0 10 0;");
+        marketVisualiserPane = new VBox(14);
+        sessionVisualiserPane = new VBox(14);
+        agentVisualiserPane = new VBox(14);
+        marketVisualiserScroll = createVisualiserScroll(marketVisualiserPane);
+        sessionVisualiserScroll = createVisualiserScroll(sessionVisualiserPane);
+        agentVisualiserScroll = createVisualiserScroll(agentVisualiserPane);
+        visualiserContentPane = new StackPane(marketVisualiserScroll, sessionVisualiserScroll, agentVisualiserScroll);
+        visualiserContentPane.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+        visualiserContentPane.setMinHeight(360);
+        visualiserContentPane.setPrefHeight(620);
+        VBox.setVgrow(visualiserContentPane, Priority.ALWAYS);
 
-        VBox root = new VBox(10, hint, detachedChart);
-        root.setPadding(new Insets(20));
-        root.setStyle("-fx-background-color: " + SURFACE_ALT + ";");
-        VBox.setVgrow(detachedChart, Priority.ALWAYS);
+        VBox section = new VBox(12, header, visualiserContentPane);
+        section.setPadding(new Insets(14));
+        section.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
+                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        VBox.setVgrow(section, Priority.ALWAYS);
 
-        Scene scene = new Scene(root, 1000, 700);
-        chartStage.setScene(scene);
-        chartStage.show();
-
-        refreshTrajectoryChart(); // Initial sync
+        showVisualiserView(VisualiserView.MARKET);
+        refreshNegotiationVisualiser();
+        return section;
     }
+
+    private ScrollPane createVisualiserScroll(VBox content) {
+        content.setFillWidth(true);
+        content.setMinWidth(0);
+        ScrollPane scroll = new ScrollPane(content);
+        scroll.setFitToWidth(true);
+        scroll.setPannable(true);
+        scroll.setMinHeight(340);
+        scroll.setPrefHeight(620);
+        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;"
+                + "-fx-border-color: transparent; -fx-padding: 0;");
+        VBox.setVgrow(scroll, Priority.ALWAYS);
+        return scroll;
+    }
+
+    private Button createVisualiserTab(String text, VisualiserView view) {
+        Button button = new Button(text);
+        button.setStyle(visualiserTabStyle(false));
+        button.setOnAction(e -> showVisualiserView(view));
+        visualiserButtons.put(view, button);
+        return button;
+    }
+
+    private String visualiserTabStyle(boolean active) {
+        return "-fx-font-size: 12; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: 800;"
+                + "-fx-padding: 7 12; -fx-background-radius: 8; -fx-border-radius: 8;"
+                + "-fx-background-color: " + (active ? ACCENT_BLUE : SURFACE_ALT) + ";"
+                + "-fx-text-fill: " + (active ? "white" : TEXT_MUTED) + ";"
+                + "-fx-border-color: " + (active ? ACCENT_BLUE : BORDER_SUBTLE) + "; -fx-cursor: hand;";
+    }
+
+    private void showVisualiserView(VisualiserView view) {
+        activeVisualiserView = view;
+        if (marketVisualiserScroll != null) {
+            marketVisualiserScroll.setVisible(view == VisualiserView.MARKET);
+            marketVisualiserScroll.setManaged(view == VisualiserView.MARKET);
+        }
+        if (sessionVisualiserScroll != null) {
+            sessionVisualiserScroll.setVisible(view == VisualiserView.SESSION);
+            sessionVisualiserScroll.setManaged(view == VisualiserView.SESSION);
+        }
+        if (agentVisualiserScroll != null) {
+            agentVisualiserScroll.setVisible(view == VisualiserView.AGENT);
+            agentVisualiserScroll.setManaged(view == VisualiserView.AGENT);
+        }
+        for (Map.Entry<VisualiserView, Button> entry : visualiserButtons.entrySet()) {
+            entry.getValue().setStyle(visualiserTabStyle(entry.getKey() == view));
+        }
+        refreshNegotiationVisualiser();
+    }
+
+    private void refreshNegotiationVisualiser() {
+        if (visualiserContentPane == null) {
+            return;
+        }
+        if (activeVisualiserView == VisualiserView.MARKET) {
+            renderMarketVisualiser();
+        } else if (activeVisualiserView == VisualiserView.SESSION) {
+            renderSessionVisualiser();
+        } else {
+            renderAgentVisualiser();
+        }
+    }
+
+    private void renderMarketVisualiser() {
+        if (marketVisualiserPane == null) {
+            return;
+        }
+        marketVisualiserPane.getChildren().clear();
+        List<SessionViewModel> sessions = buildSessionViewModels();
+        List<ListingViewModel> listings = buildListingViewModels();
+
+        int noDeals = 0;
+        int accepted = 0;
+        double dealTotal = 0;
+        int dealRounds = 0;
+        for (SessionViewModel session : sessions) {
+            if ("ACCEPTED".equals(session.outcome)) {
+                accepted++;
+                dealTotal += session.latestPrice != null ? session.latestPrice : 0;
+                dealRounds += session.rounds;
+            } else if (!"NEGOTIATING".equals(session.outcome)) {
+                noDeals++;
+            }
+        }
+        double avgSettlement = accepted == 0 ? 0 : dealTotal / accepted;
+        double avgRounds = accepted == 0 ? 0 : (double) dealRounds / accepted;
+
+        HBox metrics = new HBox(10,
+                createVisualMetric("Active sessions", String.valueOf(activeSessions), "currently negotiating"),
+                createVisualMetric("Deals closed", String.valueOf(dealsClosed), accepted + " accepted in visualiser"),
+                createVisualMetric("No-deals", String.valueOf(noDeals), "failed / timeout / walkaway"),
+                createVisualMetric("Avg. settlement", money(avgSettlement), "successful deals"),
+                createVisualMetric("Broker revenue", String.format("RM %.0f", totalRevenue), "fees + commissions"),
+                createVisualMetric("Avg. rounds", String.format("%.1f", avgRounds), "accepted sessions"));
+        for (Node node : metrics.getChildren()) {
+            HBox.setHgrow(node, Priority.ALWAYS);
+        }
+
+        HBox charts = new HBox(14,
+                createChartCard("Price distribution per car model", createPriceDistributionChart(sessions),
+                        createChartLegend(
+                                createLegendSwatch("List price", "#f45a2a"),
+                                createLegendSwatch("First offer", WARNING_ORANGE),
+                                createLegendSwatch("Final deal", "#4caf50"))),
+                createChartCard("Average concession by round", createConcessionTrendChart(sessions),
+                        createChartLegend(
+                                createLegendSwatch("Buyer movement", ACCENT_BLUE),
+                                createLegendSwatch("Dealer movement", WARNING_ORANGE))));
+        HBox.setHgrow(charts.getChildren().get(0), Priority.ALWAYS);
+        HBox.setHgrow(charts.getChildren().get(1), Priority.ALWAYS);
+
+        marketVisualiserPane.getChildren().addAll(metrics, charts,
+                createTableCard("Live listing board", createListingBoard(listings)));
+    }
+
+    private void renderSessionVisualiser() {
+        if (sessionVisualiserPane == null) {
+            return;
+        }
+        sessionVisualiserPane.getChildren().clear();
+        List<SessionViewModel> sessions = buildSessionViewModels();
+        List<String> ids = new ArrayList<>();
+        for (SessionViewModel session : sessions) {
+            ids.add(session.sessionId);
+        }
+
+        String current = visualiserSessionSelect != null ? visualiserSessionSelect.getValue() : null;
+        visualiserSessionSelect = new ComboBox<>();
+        visualiserSessionSelect.getItems().setAll(ids);
+        if (current != null && ids.contains(current)) {
+            visualiserSessionSelect.setValue(current);
+        } else if (!ids.isEmpty()) {
+            visualiserSessionSelect.setValue(ids.get(0));
+        }
+        visualiserSessionSelect.setStyle(comboBoxStyle());
+        visualiserSessionSelect.setOnAction(e -> renderSessionVisualiser());
+
+        HBox controls = new HBox(10, makeSmallLabel("Session:"), visualiserSessionSelect);
+        controls.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        sessionVisualiserPane.getChildren().add(controls);
+
+        SessionViewModel selected = null;
+        for (SessionViewModel session : sessions) {
+            if (session.sessionId.equals(visualiserSessionSelect.getValue())) {
+                selected = session;
+                break;
+            }
+        }
+        if (selected == null) {
+            sessionVisualiserPane.getChildren().add(createEmptyState("No sessions yet. Run Demo Setup, then press Start."));
+            return;
+        }
+
+        Label badge = createBadge(selected.outcome, outcomeColor(selected.outcome));
+        HBox metrics = new HBox(10,
+                createVisualMetric("List price", money(selected.listPrice), "highest dealer ask"),
+                createVisualMetric("Reserve price", money(selected.dealerReserve), "dealer minimum"),
+                createVisualMetric("Current / final", money(selected.latestPrice), "latest brokered offer"),
+                createVisualMetric("Total concession", money(selected.totalConcession), "list minus latest"),
+                createVisualMetric("Rounds", String.valueOf(selected.rounds), "broker messages"));
+        for (Node node : metrics.getChildren()) {
+            HBox.setHgrow(node, Priority.ALWAYS);
+        }
+
+        HBox titleRow = new HBox(8,
+                makeSmallLabel(selected.sessionId + " | " + valueOrNA(selected.buyer) + " / "
+                        + valueOrNA(selected.dealer) + " | " + valueOrNA(selected.car)),
+                badge);
+        titleRow.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        sessionVisualiserPane.getChildren().addAll(titleRow, metrics,
+                createChartCard("Offer timeline", createOfferTimelineChart(selected),
+                        createChartLegend(
+                                createLegendSwatch("List price", "#94a3b8"),
+                                createLegendSwatch("Buyer reserve", "#64748b"),
+                                createLegendSwatch("Dealer reserve", WARNING_ORANGE),
+                                createLegendSwatch("Buyer offer", ACCENT_BLUE),
+                                createLegendSwatch("Dealer counter", SUCCESS_GREEN))),
+                createTableCard("Round-by-round log", createRoundLog(selected)));
+    }
+
+    private void renderAgentVisualiser() {
+        if (agentVisualiserPane == null) {
+            return;
+        }
+        agentVisualiserPane.getChildren().clear();
+        try {
+            String current = visualiserAgentTypeSelect != null ? visualiserAgentTypeSelect.getValue() : "All agents";
+            visualiserAgentTypeSelect = new ComboBox<>();
+            visualiserAgentTypeSelect.getItems().addAll("All agents", "Buyers", "Dealers");
+            visualiserAgentTypeSelect.setValue(current != null ? current : "All agents");
+            visualiserAgentTypeSelect.setStyle(comboBoxStyle());
+            visualiserAgentTypeSelect.setOnAction(e -> renderAgentVisualiser());
+
+            HBox controls = new HBox(10, makeSmallLabel("Type:"), visualiserAgentTypeSelect);
+            controls.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+            agentVisualiserPane.getChildren().add(controls);
+
+            List<AgentViewModel> allAgents = buildAgentViewModels();
+            List<AgentViewModel> agents = new ArrayList<>(allAgents);
+            String filter = visualiserAgentTypeSelect.getValue();
+            agents.removeIf(agent -> "Buyers".equals(filter) && !"buyer".equals(agent.type)
+                    || "Dealers".equals(filter) && !"dealer".equals(agent.type));
+
+            Node performanceContent = agents.isEmpty()
+                    ? createEmptyState(agentEmptyMessage(filter, allAgents.isEmpty()))
+                    : createAgentPerformanceList(agents);
+            Node outcomeContent = agents.isEmpty()
+                    ? createEmptyState("No outcome data to chart for this filter.")
+                    : createAgentOutcomeSummary(agents);
+            Node concessionContent = agents.isEmpty()
+                    ? createEmptyState("No concession movement to chart for this filter.")
+                    : createAgentConcessionChart(agents);
+
+            HBox top = new HBox(14,
+                    createTableCard("Agent performance", performanceContent),
+                    createChartCard("Negotiation outcomes by agent", outcomeContent));
+            HBox.setHgrow(top.getChildren().get(0), Priority.ALWAYS);
+            HBox.setHgrow(top.getChildren().get(1), Priority.ALWAYS);
+
+            agentVisualiserPane.getChildren().addAll(top,
+                    createChartCard("Concession strategy", concessionContent));
+        } catch (Exception ex) {
+            System.err.println("Agent View render failed: " + ex.getMessage());
+            ex.printStackTrace(System.err);
+            agentVisualiserPane.getChildren().clear();
+            agentVisualiserPane.getChildren().add(createEmptyState(
+                    "Agent View failed to render: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName())));
+        }
+    }
+
+    private VBox createVisualMetric(String title, String value, String sub) {
+        VBox card = new VBox(3);
+        card.setMinWidth(120);
+        card.setPadding(new Insets(10, 12, 10, 12));
+        card.setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8;"
+                + "-fx-border-color: #e2e8f0; -fx-border-radius: 8;");
+        Label titleLabel = new Label(title);
+        titleLabel.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 700;");
+        Label valueLabel = new Label(value);
+        valueLabel.setStyle("-fx-font-size: 20; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: 800;");
+        Label subLabel = new Label(sub);
+        subLabel.setStyle("-fx-font-size: 10; -fx-text-fill: " + TEXT_MUTED + ";");
+        card.getChildren().addAll(titleLabel, valueLabel, subLabel);
+        return card;
+    }
+
+    private VBox createChartCard(String title, Node chart) {
+        return createChartCard(title, chart, null);
+    }
+
+    private VBox createChartCard(String title, Node chart, Node legend) {
+        VBox card = new VBox(8);
+        card.getChildren().addAll(createSectionLabel(title), chart);
+        if (legend != null) {
+            card.getChildren().add(legend);
+        }
+        card.setPadding(new Insets(12));
+        double chartHeight = chart instanceof Region ? ((Region) chart).getPrefHeight() : Region.USE_COMPUTED_SIZE;
+        if (chartHeight == Region.USE_COMPUTED_SIZE || chartHeight < 1) {
+            chartHeight = chart instanceof Chart ? 300 : 220;
+        }
+        double cardHeight = chart instanceof Chart ? chartHeight + (legend != null ? 76 : 48) : Region.USE_COMPUTED_SIZE;
+        card.setMinHeight(chart instanceof Chart ? cardHeight : 260);
+        card.setPrefHeight(chart instanceof Chart ? cardHeight : Region.USE_COMPUTED_SIZE);
+        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 10;"
+                + "-fx-border-color: #e2e8f0; -fx-border-radius: 10;");
+        if (chart instanceof Chart) {
+            chart.setManaged(true);
+            chart.setVisible(true);
+        }
+        VBox.setVgrow(chart, chart instanceof Chart ? Priority.NEVER : Priority.ALWAYS);
+        return card;
+    }
+
+    private HBox createChartLegend(Node... items) {
+        HBox legend = new HBox(16, items);
+        legend.setAlignment(javafx.geometry.Pos.CENTER);
+        legend.setPadding(new Insets(4, 0, 0, 0));
+        legend.setMinHeight(24);
+        legend.setStyle("-fx-background-color: transparent;");
+        return legend;
+    }
+
+    private VBox createTableCard(String title, Node content) {
+        VBox card = new VBox(8, createSectionLabel(title), content);
+        card.setPadding(new Insets(12));
+        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 10;"
+                + "-fx-border-color: #e2e8f0; -fx-border-radius: 10;");
+        return card;
+    }
+
+    private void configureChart(Chart chart, Axis<?> xAxis, Axis<?> yAxis, double height) {
+        chart.setAnimated(false);
+        chart.setMinWidth(420);
+        chart.setMinHeight(height);
+        chart.setPrefHeight(height);
+        chart.setPadding(new Insets(8, 12, 8, 8));
+        chart.setLegendSide(Side.BOTTOM);
+        chart.setStyle("-fx-font-family: " + FONT_FAMILY + ";"
+                + "-fx-text-fill: " + DARK_TEXT + ";"
+                + "-fx-background-color: transparent;");
+        configureAxis(xAxis);
+        configureAxis(yAxis);
+    }
+
+    private void configureAxis(Axis<?> axis) {
+        axis.setVisible(true);
+        axis.setManaged(true);
+        axis.setTickLabelsVisible(true);
+        axis.setTickMarkVisible(true);
+        axis.setStyle("-fx-tick-label-fill: " + TEXT_MUTED + ";"
+                + "-fx-font-size: 10;"
+                + "-fx-text-fill: " + DARK_TEXT + ";");
+    }
+
+    private void boundNumberAxis(NumberAxis axis, List<Double> values, double fallbackMin, double fallbackMax) {
+        if (values.isEmpty()) {
+            axis.setAutoRanging(false);
+            axis.setLowerBound(fallbackMin);
+            axis.setUpperBound(fallbackMax);
+            axis.setTickUnit(Math.max(1, (fallbackMax - fallbackMin) / 5));
+            return;
+        }
+        double min = Collections.min(values);
+        double max = Collections.max(values);
+        if (Math.abs(max - min) < 1) {
+            max = min + 1;
+        }
+        double span = max - min;
+        double padding = Math.max(span * 0.12, 1000);
+        double lower = Math.max(0, min - padding);
+        double upper = max + padding;
+        double tick = niceTick((upper - lower) / 5.0);
+        axis.setAutoRanging(false);
+        axis.setLowerBound(Math.floor(lower / tick) * tick);
+        axis.setUpperBound(Math.ceil(upper / tick) * tick);
+        axis.setTickUnit(tick);
+    }
+
+    private double niceTick(double roughTick) {
+        if (roughTick <= 0) {
+            return 1;
+        }
+        double exponent = Math.pow(10, Math.floor(Math.log10(roughTick)));
+        double fraction = roughTick / exponent;
+        double niceFraction;
+        if (fraction <= 1) {
+            niceFraction = 1;
+        } else if (fraction <= 2) {
+            niceFraction = 2;
+        } else if (fraction <= 5) {
+            niceFraction = 5;
+        } else {
+            niceFraction = 10;
+        }
+        return niceFraction * exponent;
+    }
+
+    private void installTooltip(XYChart.Data<?, ?> data, String text) {
+        Platform.runLater(() -> {
+            Node node = data.getNode();
+            if (node != null) {
+                Tooltip tooltip = new Tooltip(text);
+                tooltip.setShowDelay(javafx.util.Duration.millis(80));
+                Tooltip.install(node, tooltip);
+            }
+        });
+    }
+
+    private void styleLineSeries(LineChart<?, ?> chart, XYChart.Series<?, ?> series, String color, boolean dashed) {
+        Platform.runLater(() -> {
+            Node line = series.getNode();
+            if (line != null) {
+                line.setStyle("-fx-stroke: " + color + "; -fx-stroke-width: " + (dashed ? "1.5" : "2.5")
+                        + (dashed ? "; -fx-stroke-dash-array: 8 6;" : ";"));
+            }
+            for (XYChart.Data<?, ?> data : series.getData()) {
+                Node node = data.getNode();
+                if (node != null) {
+                    node.setStyle("-fx-background-color: " + color + ", white;"
+                            + "-fx-background-radius: 6px;"
+                            + "-fx-padding: " + (dashed ? "3px" : "4px") + ";");
+                }
+            }
+            chart.requestLayout();
+        });
+    }
+
+    private BarChart<String, Number> createPriceDistributionChart(List<SessionViewModel> sessions) {
+        CategoryAxis xAxis = new CategoryAxis();
+        xAxis.setLabel("Car model / session");
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel("Price (RM)");
+        BarChart<String, Number> chart = new BarChart<>(xAxis, yAxis);
+        configureChart(chart, xAxis, yAxis, 300);
+        chart.setLegendVisible(false);
+        chart.setCategoryGap(20);
+        chart.setBarGap(4);
+
+        XYChart.Series<String, Number> list = new XYChart.Series<>();
+        list.setName("List price");
+        XYChart.Series<String, Number> first = new XYChart.Series<>();
+        first.setName("First offer");
+        XYChart.Series<String, Number> finalDeal = new XYChart.Series<>();
+        finalDeal.setName("Final deal");
+
+        List<Double> yValues = new ArrayList<>();
+        for (SessionViewModel session : sessions) {
+            String label = shortLabel(session.car, session.sessionId, 14);
+            String tooltipBase = "Session: " + session.sessionId + "\nCar: " + valueOrNA(session.car)
+                    + "\nBuyer: " + valueOrNA(session.buyer) + "\nDealer: " + valueOrNA(session.dealer);
+            if (session.listPrice != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(label, session.listPrice);
+                list.getData().add(data);
+                yValues.add(session.listPrice.doubleValue());
+                installTooltip(data, tooltipBase + "\nList price: " + money(session.listPrice));
+            }
+            if (session.firstOffer != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(label, session.firstOffer);
+                first.getData().add(data);
+                yValues.add(session.firstOffer.doubleValue());
+                installTooltip(data, tooltipBase + "\nFirst offer: " + money(session.firstOffer));
+            }
+            if ("ACCEPTED".equals(session.outcome) && session.latestPrice != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(label, session.latestPrice);
+                finalDeal.getData().add(data);
+                yValues.add(session.latestPrice);
+                installTooltip(data, tooltipBase + "\nFinal deal: " + money(session.latestPrice));
+            }
+        }
+        chart.getData().addAll(list, first, finalDeal);
+        boundNumberAxis(yAxis, yValues, 0, 200000);
+        return chart;
+    }
+
+    private LineChart<Number, Number> createConcessionTrendChart(List<SessionViewModel> sessions) {
+        NumberAxis xAxis = new NumberAxis();
+        xAxis.setLabel("Round");
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel("Concession (RM)");
+        LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
+        configureChart(chart, xAxis, yAxis, 300);
+        chart.setLegendVisible(false);
+        chart.setCreateSymbols(true);
+
+        XYChart.Series<Number, Number> buyer = new XYChart.Series<>();
+        buyer.setName("Buyer movement");
+        XYChart.Series<Number, Number> dealer = new XYChart.Series<>();
+        dealer.setName("Dealer movement");
+        Map<Integer, double[]> buyerAgg = new HashMap<>();
+        Map<Integer, double[]> dealerAgg = new HashMap<>();
+
+        for (SessionViewModel session : sessions) {
+            List<TrajectoryPoint> pts = session.points;
+            for (int i = 1; i < pts.size(); i++) {
+                TrajectoryPoint prev = pts.get(i - 1);
+                TrajectoryPoint cur = pts.get(i);
+                if (isOutcomeEvent(cur.event)) {
+                    continue;
+                }
+                double delta = Math.abs(cur.price - prev.price);
+                Map<Integer, double[]> target = isDealerPoint(cur, session) ? dealerAgg : buyerAgg;
+                double[] agg = target.computeIfAbsent(i, k -> new double[2]);
+                agg[0] += delta;
+                agg[1]++;
+            }
+        }
+        addAverageSeriesData(buyer, buyerAgg);
+        addAverageSeriesData(dealer, dealerAgg);
+        chart.getData().addAll(buyer, dealer);
+        List<Double> yValues = new ArrayList<>();
+        for (XYChart.Data<Number, Number> data : buyer.getData()) {
+            yValues.add(data.getYValue().doubleValue());
+            installTooltip(data, "Buyer average movement\nRound: " + data.getXValue()
+                    + "\nConcession: " + money(data.getYValue().doubleValue()));
+        }
+        for (XYChart.Data<Number, Number> data : dealer.getData()) {
+            yValues.add(data.getYValue().doubleValue());
+            installTooltip(data, "Dealer average movement\nRound: " + data.getXValue()
+                    + "\nConcession: " + money(data.getYValue().doubleValue()));
+        }
+        boundNumberAxis(yAxis, yValues, 0, 50000);
+        styleLineSeries(chart, buyer, ACCENT_BLUE, false);
+        styleLineSeries(chart, dealer, WARNING_ORANGE, false);
+        return chart;
+    }
+
+    private LineChart<String, Number> createOfferTimelineChart(SessionViewModel session) {
+        CategoryAxis xAxis = new CategoryAxis();
+        xAxis.setLabel("Round");
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel("Price (RM)");
+        LineChart<String, Number> chart = new LineChart<>(xAxis, yAxis);
+        configureChart(chart, xAxis, yAxis, 360);
+        chart.setLegendVisible(false);
+        chart.setCreateSymbols(true);
+
+        XYChart.Series<String, Number> buyer = new XYChart.Series<>();
+        buyer.setName(valueOrNA(session.buyer) + " offers");
+        XYChart.Series<String, Number> dealer = new XYChart.Series<>();
+        dealer.setName(valueOrNA(session.dealer) + " counters");
+        XYChart.Series<String, Number> list = new XYChart.Series<>();
+        list.setName("List price");
+        XYChart.Series<String, Number> buyerReserve = new XYChart.Series<>();
+        buyerReserve.setName("Buyer reserve");
+        XYChart.Series<String, Number> reserve = new XYChart.Series<>();
+        reserve.setName("Dealer reserve");
+
+        List<Double> yValues = new ArrayList<>();
+        for (int i = 0; i < session.points.size(); i++) {
+            TrajectoryPoint point = session.points.get(i);
+            String round = "R" + (i + 1);
+            if (isBuyerPoint(point, session)) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(round, point.price);
+                buyer.getData().add(data);
+                yValues.add(point.price);
+                installTooltip(data, "Buyer offer\nRound: " + round + "\nPrice: " + money(point.price));
+            } else if (isDealerPoint(point, session)) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(round, point.price);
+                dealer.getData().add(data);
+                yValues.add(point.price);
+                installTooltip(data, "Dealer counter\nRound: " + round + "\nPrice: " + money(point.price));
+            }
+            if (session.listPrice != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(round, session.listPrice);
+                list.getData().add(data);
+                yValues.add(session.listPrice.doubleValue());
+                installTooltip(data, "List price baseline\nPrice: " + money(session.listPrice));
+            }
+            if (session.buyerReserve != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(round, session.buyerReserve);
+                buyerReserve.getData().add(data);
+                yValues.add(session.buyerReserve.doubleValue());
+                installTooltip(data, "Buyer reserve baseline\nPrice: " + money(session.buyerReserve));
+            }
+            if (session.dealerReserve != null) {
+                XYChart.Data<String, Number> data = new XYChart.Data<>(round, session.dealerReserve);
+                reserve.getData().add(data);
+                yValues.add(session.dealerReserve.doubleValue());
+                installTooltip(data, "Dealer reserve baseline\nPrice: " + money(session.dealerReserve));
+            }
+        }
+        chart.getData().addAll(list, buyerReserve, reserve, buyer, dealer);
+        boundNumberAxis(yAxis, yValues, 0, 200000);
+        styleLineSeries(chart, list, "#94a3b8", true);
+        styleLineSeries(chart, buyerReserve, "#64748b", true);
+        styleLineSeries(chart, reserve, WARNING_ORANGE, true);
+        styleLineSeries(chart, buyer, ACCENT_BLUE, false);
+        styleLineSeries(chart, dealer, SUCCESS_GREEN, false);
+        return chart;
+    }
+
+    private Node createAgentOutcomeSummary(List<AgentViewModel> agents) {
+        List<AgentViewModel> ranked = new ArrayList<>(agents);
+        ranked.sort((a, b) -> {
+            int sessionsCompare = Integer.compare(b.sessions, a.sessions);
+            if (sessionsCompare != 0) {
+                return sessionsCompare;
+            }
+            int acceptedCompare = Integer.compare(b.accepted, a.accepted);
+            if (acceptedCompare != 0) {
+                return acceptedCompare;
+            }
+            return a.name.compareToIgnoreCase(b.name);
+        });
+
+        AgentViewModel selected = ranked.get(0);
+        VBox detail = new VBox(5,
+                makeSmallLabel("Selected agent"),
+                createOutcomeDetailLine(selected.name, selected.type),
+                createOutcomeDetailLine("Sessions", String.valueOf(selected.sessions)),
+                createOutcomeDetailLine("Accepted / no-deal / pending",
+                        selected.accepted + " / " + selected.rejected + " / " + selected.pending),
+                createOutcomeDetailLine("Close rate", String.format("%.0f%%",
+                        selected.sessions == 0 ? 0 : (double) selected.accepted / selected.sessions * 100)),
+                createOutcomeDetailLine("Avg. concession", money(selected.averageConcession)));
+        detail.setPadding(new Insets(10));
+        detail.setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8;");
+
+        HBox legend = new HBox(10,
+                createLegendSwatch("Accepted", SUCCESS_GREEN),
+                createLegendSwatch("No-deal", ERROR_RED),
+                createLegendSwatch("Pending", WARNING_ORANGE));
+        legend.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        VBox rows = new VBox(8);
+        int limit = Math.min(8, ranked.size());
+        for (int i = 0; i < limit; i++) {
+            rows.getChildren().add(createOutcomeSummaryRow(ranked.get(i)));
+        }
+        if (ranked.size() > limit) {
+            AgentViewModel others = new AgentViewModel();
+            others.name = "Others (" + (ranked.size() - limit) + ")";
+            others.type = "mixed";
+            for (int i = limit; i < ranked.size(); i++) {
+                AgentViewModel agent = ranked.get(i);
+                others.sessions += agent.sessions;
+                others.accepted += agent.accepted;
+                others.rejected += agent.rejected;
+                others.pending += agent.pending;
+            }
+            rows.getChildren().add(createOutcomeSummaryRow(others));
+        }
+
+        VBox box = new VBox(10, detail, legend, rows);
+        box.setMinHeight(260);
+        box.setPrefHeight(300);
+        return box;
+    }
+
+    private HBox createOutcomeDetailLine(String label, String value) {
+        Label left = new Label(label + ":");
+        left.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 700;");
+        Label right = new Label(value);
+        right.setWrapText(true);
+        right.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + "; -fx-font-weight: 800;");
+        HBox row = new HBox(6, left, right);
+        row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        return row;
+    }
+
+    private HBox createLegendSwatch(String label, String color) {
+        Region swatch = new Region();
+        swatch.setMinSize(10, 10);
+        swatch.setPrefSize(10, 10);
+        swatch.setStyle("-fx-background-color: " + color + "; -fx-background-radius: 3;");
+        Label text = new Label(label);
+        text.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
+        return new HBox(5, swatch, text);
+    }
+
+    private HBox createOutcomeSummaryRow(AgentViewModel agent) {
+        int total = Math.max(1, agent.accepted + agent.rejected + agent.pending);
+        Label name = new Label(shortLabel(agent.name, agent.name, 18));
+        name.setMinWidth(150);
+        name.setStyle("-fx-font-size: 12; -fx-font-weight: 800; -fx-text-fill: " + DARK_TEXT + ";");
+        Tooltip.install(name, new Tooltip(agent.name + "\n" + agent.type));
+
+        HBox stack = new HBox(0,
+                outcomeSegment(agent.accepted, total, SUCCESS_GREEN),
+                outcomeSegment(agent.rejected, total, ERROR_RED),
+                outcomeSegment(agent.pending, total, WARNING_ORANGE));
+        stack.setMinWidth(220);
+        stack.setPrefWidth(220);
+        stack.setMaxWidth(220);
+        stack.setStyle("-fx-background-color: #e2e8f0; -fx-background-radius: 999;");
+
+        Label counts = new Label(agent.accepted + " won | " + agent.rejected + " no-deal | " + agent.pending + " pending");
+        counts.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
+        HBox row = new HBox(10, name, stack, counts);
+        row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        row.setPadding(new Insets(5, 0, 5, 0));
+        return row;
+    }
+
+    private Region outcomeSegment(int value, int total, String color) {
+        Region segment = new Region();
+        double width = value == 0 ? 0 : Math.max(8, 220.0 * value / total);
+        segment.setMinWidth(width);
+        segment.setPrefWidth(width);
+        segment.setMaxWidth(width);
+        segment.setMinHeight(12);
+        segment.setStyle("-fx-background-color: " + color + "; -fx-background-radius: 999;");
+        return segment;
+    }
+
+    private BarChart<String, Number> createAgentConcessionChart(List<AgentViewModel> agents) {
+        CategoryAxis xAxis = new CategoryAxis();
+        xAxis.setLabel("Agent");
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel("Avg movement (RM)");
+        BarChart<String, Number> chart = new BarChart<>(xAxis, yAxis);
+        configureChart(chart, xAxis, yAxis, 300);
+        chart.setLegendVisible(false);
+        XYChart.Series<String, Number> series = new XYChart.Series<>();
+        List<AgentViewModel> ranked = new ArrayList<>(agents);
+        ranked.sort((a, b) -> Double.compare(b.averageConcession, a.averageConcession));
+        List<Double> yValues = new ArrayList<>();
+        int limit = Math.min(8, ranked.size());
+        for (int i = 0; i < limit; i++) {
+            AgentViewModel agent = ranked.get(i);
+            XYChart.Data<String, Number> data = new XYChart.Data<>(shortLabel(agent.name, agent.name, 12),
+                    agent.averageConcession);
+            series.getData().add(data);
+            yValues.add(agent.averageConcession);
+            installTooltip(data, agent.name + "\nAvg movement: " + money(agent.averageConcession));
+        }
+        if (ranked.size() > limit) {
+            double total = 0;
+            int count = 0;
+            for (int i = limit; i < ranked.size(); i++) {
+                total += ranked.get(i).averageConcession;
+                count++;
+            }
+            double average = count == 0 ? 0 : total / count;
+            XYChart.Data<String, Number> data = new XYChart.Data<>("Others", average);
+            series.getData().add(data);
+            yValues.add(average);
+            installTooltip(data, "Others (" + count + " agents)\nAvg movement: " + money(average));
+        }
+        chart.getData().add(series);
+        boundNumberAxis(yAxis, yValues, 0, 25000);
+        return chart;
+    }
+
+    private GridPane createListingBoard(List<ListingViewModel> listings) {
+        GridPane grid = tableGrid();
+        addTableHeader(grid, 0, "Car", "Dealer", "List price", "Reserve", "Buyers", "Status");
+        int row = 1;
+        for (ListingViewModel listing : listings) {
+            addTableRow(grid, row++,
+                    valueOrNA(listing.car),
+                    valueOrNA(listing.dealer),
+                    money(listing.listPrice),
+                    money(listing.reserve),
+                    String.valueOf(listing.activeBuyers),
+                    listing.status);
+        }
+        if (listings.isEmpty()) {
+            addTableRow(grid, 1, "No listings yet", "Register dealers", "-", "-", "-", "listed");
+        }
+        return grid;
+    }
+
+    private GridPane createRoundLog(SessionViewModel session) {
+        GridPane grid = tableGrid();
+        addTableHeader(grid, 0, "Round", "Agent", "Action", "Offer", "Delta");
+        double prev = 0;
+        for (int i = 0; i < session.points.size(); i++) {
+            TrajectoryPoint point = session.points.get(i);
+            double delta = i == 0 ? 0 : point.price - prev;
+            prev = point.price;
+            addTableRow(grid, i + 1,
+                    String.valueOf(i + 1),
+                    valueOrNA(point.agent),
+                    actionLabel(point.event),
+                    money(point.price),
+                    i == 0 ? "-" : signedMoney(delta));
+        }
+        return grid;
+    }
+
+    private Node createAgentPerformanceList(List<AgentViewModel> agents) {
+        VBox list = new VBox(8);
+        if (agents.isEmpty()) {
+            list.getChildren().add(createEmptyState("No agents yet. Use Demo Setup or add buyers/dealers."));
+            return list;
+        }
+        for (AgentViewModel agent : agents) {
+            double closeRate = agent.sessions == 0 ? 0 : (double) agent.accepted / agent.sessions;
+            Label avatar = new Label(initials(agent.name));
+            avatar.setMinSize(34, 34);
+            avatar.setAlignment(javafx.geometry.Pos.CENTER);
+            avatar.setStyle("-fx-background-radius: 999; -fx-background-color: "
+                    + ("buyer".equals(agent.type) ? "#dbeafe" : "#dcfce7")
+                    + "; -fx-text-fill: " + ("buyer".equals(agent.type) ? ACCENT_BLUE : SUCCESS_GREEN)
+                    + "; -fx-font-weight: 800;");
+            ProgressBar bar = new ProgressBar(closeRate);
+            bar.setMaxWidth(Double.MAX_VALUE);
+            Label meta = new Label(agent.sessions + " sessions | " + agent.accepted + " accepted | "
+                    + agent.rejected + " no-deal | " + agent.pending + " pending");
+            meta.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
+            Label name = new Label(agent.name + "  " + agent.type);
+            name.setStyle("-fx-font-size: 13; -fx-font-weight: 800; -fx-text-fill: " + DARK_TEXT + ";");
+            VBox body = new VBox(3, name, bar, meta);
+            HBox.setHgrow(body, Priority.ALWAYS);
+            HBox row = new HBox(10, avatar, body);
+            row.setPadding(new Insets(8));
+            row.setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8;");
+            list.getChildren().add(row);
+        }
+        ScrollPane scroll = new ScrollPane(list);
+        scroll.setFitToWidth(true);
+        scroll.setPannable(true);
+        scroll.setMinHeight(220);
+        scroll.setPrefHeight(360);
+        scroll.setMaxHeight(380);
+        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;"
+                + "-fx-border-color: transparent; -fx-padding: 0;");
+        return scroll;
+    }
+
+    private String agentEmptyMessage(String filter, boolean noAgentsExist) {
+        if (noAgentsExist) {
+            return "No agents yet. Use Demo Setup or add buyers/dealers.";
+        }
+        if ("Buyers".equals(filter)) {
+            return "No buyers match this filter.";
+        }
+        if ("Dealers".equals(filter)) {
+            return "No dealers match this filter.";
+        }
+        return "No agents match this filter.";
+    }
+
+    private GridPane tableGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(6);
+        grid.setPadding(new Insets(4));
+        return grid;
+    }
+
+    private void addTableHeader(GridPane grid, int row, String... labels) {
+        for (int col = 0; col < labels.length; col++) {
+            Label label = new Label(labels[col]);
+            label.setStyle("-fx-font-size: 11; -fx-font-weight: 800; -fx-text-fill: " + TEXT_MUTED + ";");
+            grid.add(label, col, row);
+        }
+    }
+
+    private void addTableRow(GridPane grid, int row, String... values) {
+        for (int col = 0; col < values.length; col++) {
+            Label label = new Label(values[col]);
+            label.setWrapText(true);
+            label.setStyle("-fx-font-size: 12; -fx-text-fill: " + DARK_TEXT + ";");
+            grid.add(label, col, row);
+        }
+    }
+
+    private Node createEmptyState(String text) {
+        Label label = new Label(text);
+        label.setWrapText(true);
+        label.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + "; -fx-padding: 18;"
+                + "-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8;");
+        return label;
+    }
+
+    private List<SessionViewModel> buildSessionViewModels() {
+        List<String> ids = new ArrayList<>(sessionMetaMap.keySet());
+        for (String id : sessionPoints.keySet()) {
+            if (!ids.contains(id)) {
+                ids.add(id);
+            }
+        }
+        Collections.sort(ids);
+        List<SessionViewModel> models = new ArrayList<>();
+        for (String id : ids) {
+            SessionMeta meta = sessionMetaMap.get(id);
+            SessionViewModel vm = new SessionViewModel();
+            vm.sessionId = id;
+            vm.buyer = meta != null ? meta.buyer : null;
+            vm.dealer = meta != null ? meta.dealer : null;
+            vm.car = meta != null ? meta.car : null;
+            vm.buyerReserve = meta != null ? meta.buyerReserve : null;
+            vm.dealerReserve = meta != null ? meta.dealerReserve : null;
+            vm.firstOffer = meta != null ? meta.firstOffer : null;
+            vm.outcome = meta != null && meta.outcomeStatus != null ? meta.outcomeStatus : "NEGOTIATING";
+            vm.failureReason = meta != null ? meta.failureReason : null;
+            vm.points.addAll(sessionPoints.getOrDefault(id, Collections.emptyList()));
+            vm.points.sort(Comparator.comparingInt(p -> p.cycle));
+            vm.rounds = vm.points.size();
+            for (TrajectoryPoint point : vm.points) {
+                if (vm.car == null) vm.car = point.car;
+                if (vm.listPrice == null || point.price > vm.listPrice) vm.listPrice = (int) Math.round(point.price);
+                vm.latestPrice = point.price;
+                if (isOutcomeEvent(point.event)) vm.outcome = point.event == TrajectoryEvent.ACCEPT ? "ACCEPTED" : "NO DEAL";
+            }
+            if (meta != null && meta.outcomePrice != null) vm.latestPrice = meta.outcomePrice;
+            if (vm.listPrice == null && vm.latestPrice != null) vm.listPrice = (int) Math.round(vm.latestPrice);
+            if (vm.listPrice != null && vm.latestPrice != null) vm.totalConcession = Math.max(0, vm.listPrice - vm.latestPrice);
+            models.add(vm);
+        }
+        return models;
+    }
+
+    private List<AgentViewModel> buildAgentViewModels() {
+        List<SessionViewModel> sessions = buildSessionViewModels();
+        Set<String> names = new LinkedHashSet<>();
+        Set<String> dealerNames = new HashSet<>();
+
+        addCleanAgentNames(names, buyerAgents);
+        addCleanAgentNames(names, dealerAgents);
+        addCleanAgentNames(dealerNames, dealerAgents);
+        addCleanAgentNames(names, agentPoints.keySet());
+        for (SessionViewModel session : sessions) {
+            String buyer = cleanAgentName(session.buyer);
+            String dealer = cleanAgentName(session.dealer);
+            if (buyer != null) {
+                names.add(buyer);
+            }
+            if (dealer != null) {
+                names.add(dealer);
+                dealerNames.add(dealer);
+            }
+        }
+
+        List<String> sortedNames = new ArrayList<>(names);
+        sortedNames.sort((a, b) -> {
+            boolean aDealer = dealerNames.contains(a);
+            boolean bDealer = dealerNames.contains(b);
+            if (aDealer != bDealer) {
+                return aDealer ? 1 : -1;
+            }
+            return a.compareToIgnoreCase(b);
+        });
+
+        List<AgentViewModel> models = new ArrayList<>();
+        for (String name : sortedNames) {
+            AgentViewModel vm = new AgentViewModel();
+            vm.name = name;
+            vm.type = dealerNames.contains(name) ? "dealer" : "buyer";
+            double acceptedTotal = 0;
+            for (SessionViewModel session : sessions) {
+                String buyer = cleanAgentName(session.buyer);
+                String dealer = cleanAgentName(session.dealer);
+                if (!name.equals(buyer) && !name.equals(dealer)) continue;
+                vm.sessions++;
+                if ("ACCEPTED".equals(session.outcome)) {
+                    vm.accepted++;
+                    acceptedTotal += session.latestPrice != null ? session.latestPrice : 0;
+                } else if ("NEGOTIATING".equals(session.outcome)) {
+                    vm.pending++;
+                } else {
+                    vm.rejected++;
+                }
+            }
+            vm.averageDealPrice = vm.accepted == 0 ? 0 : acceptedTotal / vm.accepted;
+            vm.averageConcession = averageMovement(agentPoints.getOrDefault(name, Collections.emptyList()));
+            models.add(vm);
+        }
+        return models;
+    }
+
+    private void addCleanAgentNames(Set<String> target, Iterable<String> source) {
+        for (String name : source) {
+            String cleaned = cleanAgentName(name);
+            if (cleaned != null) {
+                target.add(cleaned);
+            }
+        }
+    }
+
+    private String cleanAgentName(String name) {
+        if (name == null) {
+            return null;
+        }
+        String cleaned = stripKnownFieldPrefix(trimBrokerRelationship(name)).trim();
+        if (cleaned.endsWith(" buyer")) {
+            cleaned = cleaned.substring(0, cleaned.length() - " buyer".length()).trim();
+        } else if (cleaned.endsWith(" dealer")) {
+            cleaned = cleaned.substring(0, cleaned.length() - " dealer".length()).trim();
+        }
+        return cleaned.isBlank() ? null : cleaned;
+    }
+
+    private List<ListingViewModel> buildListingViewModels() {
+        Map<String, ListingViewModel> listings = new LinkedHashMap<>();
+        for (Map.Entry<String, ListingViewModel> entry : listingModelMap.entrySet()) {
+            ListingViewModel copy = copyListing(entry.getValue());
+            copy.activeBuyers = 0;
+            listings.put(entry.getKey(), copy);
+        }
+
+        Map<String, Set<String>> activeBuyersByListing = new HashMap<>();
+        for (SessionViewModel session : buildSessionViewModels()) {
+            if (session.dealer == null || session.dealer.isBlank() || session.car == null || session.car.isBlank()) {
+                continue;
+            }
+            String key = listingKey(session.dealer, session.car);
+            ListingViewModel vm = listings.computeIfAbsent(key, k -> {
+                ListingViewModel listing = new ListingViewModel();
+                listing.dealer = session.dealer;
+                listing.car = session.car;
+                listing.status = "listed";
+                return listing;
+            });
+            if (vm.listPrice == null && session.listPrice != null) vm.listPrice = session.listPrice;
+            if (vm.reserve == null && session.dealerReserve != null) vm.reserve = session.dealerReserve;
+            if ("NEGOTIATING".equals(session.outcome)) {
+                activeBuyersByListing.computeIfAbsent(key, k -> new HashSet<>())
+                        .add(session.buyer != null && !session.buyer.isBlank() ? session.buyer : session.sessionId);
+                vm.status = "negotiating";
+            } else if ("ACCEPTED".equals(session.outcome) && !"negotiating".equals(vm.status)) {
+                vm.status = "closed";
+            }
+        }
+        for (Map.Entry<String, Set<String>> entry : activeBuyersByListing.entrySet()) {
+            ListingViewModel listing = listings.get(entry.getKey());
+            if (listing != null) {
+                listing.activeBuyers = entry.getValue().size();
+            }
+        }
+        return new ArrayList<>(listings.values());
+    }
+
+    private ListingViewModel copyListing(ListingViewModel source) {
+        ListingViewModel copy = new ListingViewModel();
+        copy.car = source.car;
+        copy.dealer = source.dealer;
+        copy.listPrice = source.listPrice;
+        copy.reserve = source.reserve;
+        copy.activeBuyers = source.activeBuyers;
+        copy.status = source.status;
+        return copy;
+    }
+
+    private void recordDealerListing(String dealer, String car, int price, int stock, NegotiationConfig config) {
+        ListingViewModel listing = new ListingViewModel();
+        listing.dealer = dealer;
+        listing.car = car;
+        listing.listPrice = price;
+        listing.reserve = (int) (price * config.getDealerReservePercent());
+        listing.status = stock > 0 ? "listed" : "sold out";
+        listingModelMap.put(listingKey(dealer, car), listing);
+        refreshNegotiationVisualiser();
+    }
+
+    private String listingKey(String dealer, String car) {
+        return valueOrNA(dealer) + "|" + valueOrNA(car);
+    }
+
+    private boolean isBuyerPoint(TrajectoryPoint point, SessionViewModel session) {
+        if (point.event == TrajectoryEvent.START || point.event == TrajectoryEvent.OFFER) return true;
+        return session != null && session.buyer != null && session.buyer.equals(point.agent);
+    }
+
+    private boolean isDealerPoint(TrajectoryPoint point, SessionViewModel session) {
+        if (point.event == TrajectoryEvent.COUNTER || point.event == TrajectoryEvent.ACCEPT) return true;
+        return session != null && session.dealer != null && session.dealer.equals(point.agent);
+    }
+
+    private boolean isOutcomeEvent(TrajectoryEvent event) {
+        return event == TrajectoryEvent.ACCEPT || event == TrajectoryEvent.WALKAWAY;
+    }
+
+    private void addAverageSeriesData(XYChart.Series<Number, Number> series, Map<Integer, double[]> values) {
+        List<Integer> keys = new ArrayList<>(values.keySet());
+        Collections.sort(keys);
+        for (Integer key : keys) {
+            double[] agg = values.get(key);
+            if (agg[1] > 0) series.getData().add(new XYChart.Data<>(key, agg[0] / agg[1]));
+        }
+    }
+
+    private double averageMovement(List<TrajectoryPoint> points) {
+        if (points.size() < 2) return 0;
+        List<TrajectoryPoint> sorted = new ArrayList<>(points);
+        sorted.sort(Comparator.comparingInt(p -> p.cycle));
+        double total = 0;
+        for (int i = 1; i < sorted.size(); i++) total += Math.abs(sorted.get(i).price - sorted.get(i - 1).price);
+        return total / (sorted.size() - 1);
+    }
+
+    private String comboBoxStyle() {
+        return "-fx-font-size: 12; -fx-font-family: " + FONT_FAMILY + "; -fx-background-color: " + SURFACE
+                + "; -fx-border-color: " + BORDER_SUBTLE
+                + "; -fx-border-radius: 6; -fx-background-radius: 6; -fx-padding: 2 6;";
+    }
+
+    private Label makeSmallLabel(String text) {
+        Label label = new Label(text);
+        label.setStyle("-fx-font-size: 12; -fx-font-weight: 700; -fx-text-fill: " + TEXT_MUTED + ";");
+        return label;
+    }
+
+    private Label createBadge(String text, String color) {
+        Label badge = new Label(text);
+        badge.setStyle("-fx-font-size: 11; -fx-font-weight: 800; -fx-text-fill: white;"
+                + "-fx-background-color: " + color + "; -fx-background-radius: 6; -fx-padding: 3 8;");
+        return badge;
+    }
+
+    private String outcomeColor(String outcome) {
+        if ("ACCEPTED".equals(outcome)) return SUCCESS_GREEN;
+        if ("NEGOTIATING".equals(outcome)) return WARNING_ORANGE;
+        return ERROR_RED;
+    }
+
+    private String shortLabel(String value, String fallback) {
+        return shortLabel(value, fallback, 18);
+    }
+
+    private String shortLabel(String value, String fallback, int maxLength) {
+        String label = value != null && !value.isBlank() ? value : fallback;
+        if (label == null) {
+            return "N/A";
+        }
+        return label.length() > maxLength ? label.substring(0, Math.max(1, maxLength - 1)) + "..." : label;
+    }
+
+    private String actionLabel(TrajectoryEvent event) {
+        if (event == TrajectoryEvent.START) return "initial offer";
+        if (event == TrajectoryEvent.OFFER) return "buyer offer";
+        if (event == TrajectoryEvent.COUNTER) return "dealer counter";
+        if (event == TrajectoryEvent.ACCEPT) return "accept";
+        if (event == TrajectoryEvent.WALKAWAY) return "no deal";
+        return "price update";
+    }
+
+    private String initials(String name) {
+        if (name == null || name.isBlank()) return "?";
+        String[] parts = name.split("[-_\\s]+");
+        String first = parts.length > 0 && !parts[0].isBlank() ? parts[0].substring(0, 1) : "";
+        String second = parts.length > 1 && !parts[1].isBlank() ? parts[1].substring(0, 1) : "";
+        return (first + second).toUpperCase();
+    }
+
+    private String money(Integer value) {
+        return value == null ? "N/A" : "RM " + value;
+    }
+
+    private String money(Double value) {
+        return value == null ? "N/A" : String.format("RM %.0f", value);
+    }
+
+    private String money(double value) {
+        return String.format("RM %.0f", value);
+    }
+
+    private String signedMoney(double value) {
+        return (value >= 0 ? "+" : "-") + money(Math.abs(value));
+    }
+
 
     private void updateDealerStatus() {
         if (dealerCount == 0) {
@@ -1029,6 +2328,20 @@ public class MainUI extends Application {
         valueLabel.setStyle("-fx-font-size: 28; -fx-font-weight: 700; -fx-text-fill: " + color + ";");
         card.getChildren().addAll(titleLabel, valueLabel);
         return card;
+    }
+
+    private Label createSectionLabel(String text) {
+        Label label = new Label(text);
+        label.setStyle("-fx-font-size: 13; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        return label;
+    }
+
+    private Label createChecklistItem(String text) {
+        Label label = new Label(text);
+        label.setWrapText(true);
+        label.setStyle("-fx-font-size: 12; -fx-font-weight: 600; -fx-text-fill: " + DARK_TEXT + ";"
+                + "-fx-background-color: white; -fx-background-radius: 8; -fx-padding: 8 10;");
+        return label;
     }
 
     private VBox createBuyerView(UILogger logger) {
@@ -1115,6 +2428,7 @@ public class MainUI extends Application {
                 }
                 waitingBuyerAgents.add(name);
                 updateNegotiationControlStatus();
+                refreshNegotiationVisualiser();
                 logger.log("Buyer '" + name + "' added — " + car + " @ RM" + budgetStr);
                 launchSniffer(logger);
                 buyerName.clear();
@@ -1145,17 +2459,18 @@ public class MainUI extends Application {
 
     /** Horizontal toolbar replacing the old collapsible sidebar. */
     private HBox createActionBar() {
-        HBox bar = new HBox(8);
-        bar.setPadding(new Insets(10, 20, 10, 20));
+        HBox bar = new HBox(10);
+        bar.setPadding(new Insets(12, 20, 12, 20));
         bar.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        bar.setStyle("-fx-background-color: " + SURFACE + "; "
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 0 0 1 0;");
+        bar.setStyle("-fx-background-color: #e0f2fe; "
+                + "-fx-border-color: #bae6fd; -fx-border-width: 0 0 1 0;");
 
-        Button demoBtn = createBarButton("\u26a1 Demo", PRIMARY_BLUE);
-        Button startBtn = createBarButton("\u25b6 Start", SUCCESS_GREEN);
-        playPauseBtn = createBarButton("\u23f8 Pause", WARNING_ORANGE);
-        Button stepBtn = createBarButton("\u23ed Step", ACCENT_BLUE);
-        Button sniffBtn = createBarButton("\ud83d\udd0d Sniffer", "#6366f1");
+        Button demoBtn = createBarButton("Demo Setup", PRIMARY_BLUE);
+        Button startBtn = createBarButton("Start", SUCCESS_GREEN);
+        playPauseBtn = createBarButton("Pause", WARNING_ORANGE);
+        Button stepBtn = createBarButton("Step Cycle", ACCENT_BLUE);
+        Button stopBtn = createBarButton("Stop", ERROR_RED);
+        Button sniffBtn = createBarButton("Sniffer", "#4f46e5");
 
         demoBtn.setOnAction(e -> createDemoScenario());
         startBtn.setOnAction(e -> {
@@ -1168,15 +2483,25 @@ public class MainUI extends Application {
             loggerLog("Started " + waitingBuyerAgents.size() + " buyer(s).");
             waitingBuyerAgents.clear();
             isAutoPlay = true;
-            playPauseBtn.setText("\u23f8 Pause");
+            playPauseBtn.setText("Pause");
             sendSpaceCommand("RESUME");
             updateNegotiationControlStatus();
+            refreshNegotiationVisualiser();
         });
         playPauseBtn.setOnAction(e -> {
             toggleAutoplay();
             updateNegotiationControlStatus();
         });
         stepBtn.setOnAction(e -> sendSpaceCommand("STEP"));
+        stopBtn.setOnAction(e -> {
+            for (String b : new ArrayList<>(buyerAgents)) {
+                sendAgentCommand(b, "STOP_NEGOTIATION");
+            }
+            waitingBuyerAgents.clear();
+            loggerLog("Stop sent to buyer agents.");
+            updateNegotiationControlStatus();
+            refreshNegotiationVisualiser();
+        });
         sniffBtn.setOnAction(e -> launchSniffer(msg -> logArea.appendText(msg + "\n")));
 
         // ── Speed slider ──────────────────────────────────────────────────────
@@ -1209,7 +2534,7 @@ public class MainUI extends Application {
             sendSpeedCommand(delayMs);
         });
 
-        Label speedIconLabel = new Label("\u23f1");
+        Label speedIconLabel = new Label("Speed");
         speedIconLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + TEXT_MUTED + ";");
         HBox speedBox = new HBox(4, speedIconLabel, speedSlider, speedLabel);
         speedBox.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
@@ -1227,7 +2552,7 @@ public class MainUI extends Application {
         updateDealerStatus();
         updateBuyerStatus();
 
-        bar.getChildren().addAll(demoBtn, startBtn, playPauseBtn, stepBtn, sniffBtn,
+        bar.getChildren().addAll(demoBtn, startBtn, playPauseBtn, stepBtn, stopBtn, sniffBtn,
                 sep2, speedBox,
                 sep, negotiationControlStatusLabel);
         return bar;
@@ -1248,9 +2573,10 @@ public class MainUI extends Application {
 
     private Button createBarButton(String text, String color) {
         Button btn = new Button(text);
-        btn.setStyle("-fx-font-size: 12; -fx-font-weight: 600; -fx-padding: 7 14; "
+        btn.setStyle("-fx-font-size: 12; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: 800; -fx-padding: 8 16; "
                 + "-fx-background-color: " + color + "; -fx-text-fill: white; "
-                + "-fx-background-radius: 8; -fx-cursor: hand;");
+                + "-fx-background-radius: 10; -fx-cursor: hand;"
+                + "-fx-effect: dropshadow(gaussian, rgba(30,64,175,0.16), 8, 0, 0, 2);");
         btn.setOnMouseEntered(e -> btn.setOpacity(0.85));
         btn.setOnMouseExited(e -> btn.setOpacity(1.0));
         return btn;
@@ -1294,6 +2620,7 @@ public class MainUI extends Application {
             buyerCountLabel.setText(String.valueOf(buyerCount));
             updateBuyerStatus();
             updateNegotiationControlStatus();
+            refreshNegotiationVisualiser();
 
             launchSniffer(appLogger);
 
@@ -1327,6 +2654,7 @@ public class MainUI extends Application {
                 new Object[] { car, price, stock, appLogger, config }).start();
         loggerLog("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
         dealerAgents.add(name);
+        recordDealerListing(name, car, Integer.parseInt(price), Integer.parseInt(stock), config);
     }
 
     private void createDemoBuyer(String name, String car, String budget, NegotiationConfig config) throws Exception {
@@ -1335,6 +2663,7 @@ public class MainUI extends Application {
         buyerAgents.add(name);
         waitingBuyerAgents.add(name);
         loggerLog("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budget);
+        refreshNegotiationVisualiser();
     }
 
     private VBox createDealerView(UILogger logger) {
@@ -1416,10 +2745,12 @@ public class MainUI extends Application {
                     return;
                 }
 
+                NegotiationConfig config = buildNegotiationConfig();
                 cc.createNewAgent(name, "org.example.agents.DealerAgent",
-                        new Object[] { car, price, stock, logger, buildNegotiationConfig() }).start();
+                        new Object[] { car, price, stock, logger, config }).start();
                 logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
                 dealerAgents.add(name);
+                recordDealerListing(name, car, (int) priceAmount, stockAmount, config);
                 // Try to refresh sniffer to include the newly added dealer
                 launchSniffer(logger);
                 dealerCount++;
@@ -1472,8 +2803,8 @@ public class MainUI extends Application {
                         + "  ✓ Session-based negotiation with unique IDs\n"
                         + "  ✓ Cycle-based concession using SpaceControl\n\n"
                         + "BROKER FEE POLICY:\n"
-                        + "  • Fixed Session Fee:  RM 50 (charged at session start)\n"
-                        + "  • Commission:         5% of final sale price (on deal only)\n"
+                        + "  • Fixed Session Fee:  RM " + (int) appConfig.fixedFee() + " (charged at session start)\n"
+                        + "  • Commission:         " + (int) (appConfig.commissionRate() * 100) + "% of final sale price (on deal only)\n"
                         + "  • No-deal sessions:   Fixed fee still collected\n"
                         + "  • Example: RM 100k sale = RM 5,000 commission + RM 50 fee\n\n"
                         + "NEGOTIATION PROTOCOL (Broker-Routed):\n"
@@ -1492,7 +2823,7 @@ public class MainUI extends Application {
                         + "  • Buyer:      Raises willing offer as cycles increase\n"
                         + "  • Formula:    Price(t) = P0 - (P0 - Pres) * (t/T)^\u03b2\n"
                         + "  • Strategies: BOULWARE (β=2), LINEAR (β=1), CONCEDER (β=0.45)\n\n"
-                        + "CURRENT METRICS: See Dashboard and Sessions tabs.\n"
+                        + "CURRENT METRICS: See Dashboard and Sessions views.\n"
                         + "SETTINGS:        Adjust parameters in the panel above.\n"
                         + "═══════════════════════════════════════════════");
 
@@ -1524,31 +2855,32 @@ public class MainUI extends Application {
 
         Label title = new Label("Negotiation Settings");
         title.setStyle("-fx-font-size: 17; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        NegotiationConfig defaults = NegotiationConfig.defaults();
 
         strategyChoice = new ComboBox<>();
         strategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
-        strategyChoice.setValue("BOULWARE");
+        strategyChoice.setValue(defaults.getStrategy().name());
         strategyChoice.setPrefWidth(180);
 
         switchStrategyChoice = new ComboBox<>();
         switchStrategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
-        switchStrategyChoice.setValue("CONCEDER");
+        switchStrategyChoice.setValue(defaults.getSwitchStrategy().name());
         switchStrategyChoice.setPrefWidth(180);
 
-        deadlineCyclesField = createStyledTextField("50");
-        deadlineCyclesField.setText("50");
-        strategySwitchCycleField = createStyledTextField("8");
-        strategySwitchCycleField.setText("8");
-        buyerStartPercentField = createStyledTextField("70");
-        buyerStartPercentField.setText("70");
-        reservePercentField = createStyledTextField("70");
-        reservePercentField.setText("70");
-        maxRoundsField = createStyledTextField("3");
-        maxRoundsField.setText("3");
-        retryLimitField = createStyledTextField("2");
-        retryLimitField.setText("2");
-        stuckRoundsField = createStyledTextField("2");
-        stuckRoundsField.setText("2");
+        deadlineCyclesField = createStyledTextField(String.valueOf(defaults.getDeadlineCycles()));
+        deadlineCyclesField.setText(String.valueOf(defaults.getDeadlineCycles()));
+        strategySwitchCycleField = createStyledTextField(String.valueOf(defaults.getStrategySwitchCycle()));
+        strategySwitchCycleField.setText(String.valueOf(defaults.getStrategySwitchCycle()));
+        buyerStartPercentField = createStyledTextField(String.valueOf((int) (defaults.getBuyerStartPercent() * 100)));
+        buyerStartPercentField.setText(String.valueOf((int) (defaults.getBuyerStartPercent() * 100)));
+        reservePercentField = createStyledTextField(String.valueOf((int) (defaults.getDealerReservePercent() * 100)));
+        reservePercentField.setText(String.valueOf((int) (defaults.getDealerReservePercent() * 100)));
+        maxRoundsField = createStyledTextField(String.valueOf(defaults.getMaxRoundsPerDealer()));
+        maxRoundsField.setText(String.valueOf(defaults.getMaxRoundsPerDealer()));
+        retryLimitField = createStyledTextField(String.valueOf(defaults.getMaxSearchRetries()));
+        retryLimitField.setText(String.valueOf(defaults.getMaxSearchRetries()));
+        stuckRoundsField = createStyledTextField(String.valueOf(defaults.getStuckRoundsBeforeAcceleration()));
+        stuckRoundsField.setText(String.valueOf(defaults.getStuckRoundsBeforeAcceleration()));
 
         GridPane grid = new GridPane();
         grid.setHgap(12);
@@ -1842,31 +3174,48 @@ public class MainUI extends Application {
         manualSendFirstOfferBtn.setOnAction(e -> {
             String dealer = manualDealerSelect.getValue();
             String offer = manualFirstOfferField.getText().trim();
-            if (dealer != null && !offer.isEmpty()) {
-                sendAgentCommand(manualBuyerSelect.getValue(), "MANUAL_ACTION", "SHORTLIST;" + dealer + ";" + offer);
-                manualLogArea.appendText("\n[YOU] Picked " + dealer + " with RM " + offer);
-                manualSendFirstOfferBtn.setDisable(true);
+            String buyer = manualBuyerSelect.getValue();
+            if (buyer == null || dealer == null || offer.isEmpty() || !isPositiveInteger(offer)) {
+                showAlert("Select a manual buyer, select a dealer, and enter a positive first offer.",
+                        Alert.AlertType.WARNING);
+                return;
             }
+            sendAgentCommand(buyer, "MANUAL_ACTION", "SHORTLIST;" + dealer + ";" + offer);
+            manualLogArea.appendText("\n[YOU] Picked " + dealer + " with RM " + offer);
+            manualSendFirstOfferBtn.setDisable(true);
         });
 
         manualSendCounterBtn.setOnAction(e -> {
             String offer = manualCounterPriceField.getText().trim();
-            if (!offer.isEmpty()) {
-                sendAgentCommand(manualBuyerSelect.getValue(), "MANUAL_ACTION", "COUNTER;" + offer);
-                manualLogArea.appendText("\n[YOU] Countered RM " + offer);
-                disableCounterControls();
+            String buyer = manualBuyerSelect.getValue();
+            if (buyer == null || !isPositiveInteger(offer)) {
+                showAlert("Select a manual buyer and enter a positive counter price.", Alert.AlertType.WARNING);
+                return;
             }
+            sendAgentCommand(buyer, "MANUAL_ACTION", "COUNTER;" + offer);
+            manualLogArea.appendText("\n[YOU] Countered RM " + offer);
+            disableCounterControls();
         });
 
         manualAcceptDealBtn.setOnAction(e -> {
             String offer = manualCounterPriceField.getText().trim();
-            sendAgentCommand(manualBuyerSelect.getValue(), "MANUAL_ACTION", "ACCEPT;" + offer);
+            String buyer = manualBuyerSelect.getValue();
+            if (buyer == null || !isPositiveInteger(offer)) {
+                showAlert("Select a manual buyer and enter a positive accepted price.", Alert.AlertType.WARNING);
+                return;
+            }
+            sendAgentCommand(buyer, "MANUAL_ACTION", "ACCEPT;" + offer);
             manualLogArea.appendText("\n[YOU] Accepted RM " + offer);
             disableCounterControls();
         });
 
         manualWalkAwayBtn.setOnAction(e -> {
-            sendAgentCommand(manualBuyerSelect.getValue(), "MANUAL_ACTION", "WALKAWAY;");
+            String buyer = manualBuyerSelect.getValue();
+            if (buyer == null) {
+                showAlert("Select a manual buyer before walking away.", Alert.AlertType.WARNING);
+                return;
+            }
+            sendAgentCommand(buyer, "MANUAL_ACTION", "WALKAWAY;");
             manualLogArea.appendText("\n[YOU] Walked away.");
             disableCounterControls();
         });
@@ -1880,6 +3229,14 @@ public class MainUI extends Application {
         manualSendCounterBtn.setDisable(true);
         manualAcceptDealBtn.setDisable(true);
         manualWalkAwayBtn.setDisable(true);
+    }
+
+    private boolean isPositiveInteger(String value) {
+        try {
+            return Integer.parseInt(value.trim()) > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void handleManualPromptLog(String msg) {
@@ -1980,302 +3337,8 @@ public class MainUI extends Application {
         alert.showAndWait();
     }
 
-    private void refreshTrajectoryFilters() {
-        String currentAgent = chartAgentSelect != null ? chartAgentSelect.getValue() : ALL_AGENTS;
-        String currentSession = chartSessionSelect != null ? chartSessionSelect.getValue() : ALL_SESSIONS;
-        String currentCar = chartCarFilter != null ? chartCarFilter.getValue() : ALL_CARS;
-
-        List<String> agents = new ArrayList<>();
-        agents.add(ALL_AGENTS);
-        agents.addAll(agentPoints.keySet());
-
-        List<String> sessions = new ArrayList<>();
-        sessions.add(ALL_SESSIONS);
-        sessions.addAll(sessionPoints.keySet());
-
-        List<String> cars = new ArrayList<>();
-        cars.add(ALL_CARS);
-        for (SessionMeta meta : sessionMetaMap.values()) {
-            if (meta.car != null && !cars.contains(meta.car)) {
-                cars.add(meta.car);
-            }
-        }
-        for (List<TrajectoryPoint> list : agentPoints.values()) {
-            for (TrajectoryPoint pt : list) {
-                if (pt.car != null && !cars.contains(pt.car)) {
-                    cars.add(pt.car);
-                }
-            }
-        }
-
-        if (chartAgentSelect != null) {
-            chartAgentSelect.getItems().setAll(agents);
-            if (agents.contains(currentAgent))
-                chartAgentSelect.setValue(currentAgent);
-            else
-                chartAgentSelect.setValue(ALL_AGENTS);
-            chartAgentSelect.setDisable(chartMode == TrajectoryMode.SESSION || chartMode == TrajectoryMode.MARKET);
-        }
-
-        if (chartSessionSelect != null) {
-            chartSessionSelect.getItems().setAll(sessions);
-            if (sessions.contains(currentSession))
-                chartSessionSelect.setValue(currentSession);
-            else
-                chartSessionSelect.setValue(ALL_SESSIONS);
-            chartSessionSelect.setDisable(chartMode == TrajectoryMode.AGENT || chartMode == TrajectoryMode.MARKET);
-        }
-
-        if (chartCarFilter != null) {
-            chartCarFilter.getItems().setAll(cars);
-            if (cars.contains(currentCar))
-                chartCarFilter.setValue(currentCar);
-            else
-                chartCarFilter.setValue(ALL_CARS);
-        }
-    }
-
-    private void refreshTrajectoryChart() {
-        if (priceChart == null)
-            return;
-        for (LineChart<Number, Number> chart : activeCharts) {
-            chart.getData().clear();
-        }
-
-        boolean showMarkers = chartMarkersToggle != null && chartMarkersToggle.isSelected();
-        boolean fullHistory = chartAllHistoryToggle != null && chartAllHistoryToggle.isSelected();
-        int limit = fullHistory ? Integer.MAX_VALUE
-                : (chartHistorySlider != null ? (int) chartHistorySlider.getValue() : 60);
-
-        String selAgent = chartAgentSelect != null ? chartAgentSelect.getValue() : ALL_AGENTS;
-        String selSession = chartSessionSelect != null ? chartSessionSelect.getValue() : ALL_SESSIONS;
-        String selCar = chartCarFilter != null ? chartCarFilter.getValue() : ALL_CARS;
-
-        Map<String, List<TrajectoryPoint>> source = (chartMode == TrajectoryMode.AGENT) ? agentPoints : sessionPoints;
-
-        for (Map.Entry<String, List<TrajectoryPoint>> entry : source.entrySet()) {
-            String key = entry.getKey();
-            List<TrajectoryPoint> allPts = entry.getValue();
-
-            if (chartMode == TrajectoryMode.AGENT) {
-                if (!ALL_AGENTS.equals(selAgent) && !key.equals(selAgent))
-                    continue;
-            } else {
-                if (!ALL_SESSIONS.equals(selSession) && !key.equals(selSession))
-                    continue;
-            }
-
-            // Filter by car
-            List<TrajectoryPoint> filtered = new ArrayList<>();
-            for (TrajectoryPoint pt : allPts) {
-                if (!ALL_CARS.equals(selCar)) {
-                    String ptCar = pt.car;
-                    if (ptCar == null && pt.sessionId != null) {
-                        SessionMeta meta = sessionMetaMap.get(pt.sessionId);
-                        if (meta != null)
-                            ptCar = meta.car;
-                    }
-                    if (ptCar == null || !ptCar.equals(selCar))
-                        continue;
-                }
-                filtered.add(pt);
-            }
-
-            if (filtered.isEmpty())
-                continue;
-
-            List<TrajectoryPoint> displayPts;
-            if (chartMode == TrajectoryMode.MARKET) {
-                displayPts = new ArrayList<>();
-                if (!filtered.isEmpty()) {
-                    TrajectoryPoint last = filtered.get(filtered.size() - 1);
-                    for (TrajectoryPoint p : filtered) {
-                        if (p.event == TrajectoryEvent.ACCEPT || p.event == TrajectoryEvent.WALKAWAY) {
-                            last = p;
-                        }
-                    }
-                    displayPts.add(last);
-                }
-            } else {
-                // Apply history limit
-                int startIdx = Math.max(0, filtered.size() - limit);
-                displayPts = new ArrayList<>(filtered.subList(startIdx, filtered.size()));
-                displayPts.sort(java.util.Comparator.comparingInt(p -> p.cycle));
-            }
-
-            for (LineChart<Number, Number> chart : activeCharts) {
-                // Group points by agent to draw distinct lines per agent in the session/market
-                Map<String, List<TrajectoryPoint>> pointsByAgent = new HashMap<>();
-                if (chartMode == TrajectoryMode.SESSION || chartMode == TrajectoryMode.MARKET) {
-                    for (TrajectoryPoint p : displayPts) {
-                        if (p.event == TrajectoryEvent.ACCEPT || p.event == TrajectoryEvent.WALKAWAY) {
-                            // Attach the broker's outcome point to the negotiating agents so the lines converge
-                            java.util.Set<String> sessionAgents = new java.util.HashSet<>();
-                            for (TrajectoryPoint other : displayPts) {
-                                if (other.event != TrajectoryEvent.ACCEPT && other.event != TrajectoryEvent.WALKAWAY) {
-                                    sessionAgents.add(other.agent);
-                                }
-                            }
-                            if (sessionAgents.isEmpty()) {
-                                pointsByAgent.computeIfAbsent(p.agent, k -> new ArrayList<>()).add(p);
-                            } else {
-                                for (String a : sessionAgents) {
-                                    pointsByAgent.computeIfAbsent(a, k -> new ArrayList<>()).add(new TrajectoryPoint(p.cycle, p.price, a, p.sessionId, p.car, p.event));
-                                }
-                            }
-                        } else {
-                            pointsByAgent.computeIfAbsent(p.agent, k -> new ArrayList<>()).add(p);
-                        }
-                    }
-                } else {
-                    pointsByAgent.put(key, displayPts); // Agent mode keeps it as one series per agent
-                }
-
-                for (Map.Entry<String, List<TrajectoryPoint>> agentEntry : pointsByAgent.entrySet()) {
-                    XYChart.Series<Number, Number> series = new XYChart.Series<>();
-                    series.setName(chartMode == TrajectoryMode.AGENT ? key : agentEntry.getKey() + " (" + key + ")");
-
-                    for (TrajectoryPoint pt : agentEntry.getValue()) {
-                        XYChart.Data<Number, Number> dataNode = new XYChart.Data<>(pt.cycle, pt.price);
-                        if (showMarkers || chartMode == TrajectoryMode.MARKET) { // Market mode always needs markers
-                            javafx.scene.shape.Shape marker = createMarker(pt.event);
-                            if (marker != null) {
-                                dataNode.setNode(marker);
-                                Tooltip tooltip = new Tooltip(String.format(
-                                        "Agent: %s\nSession: %s\nCycle: %d\nPrice: RM %.0f\nEvent: %s\nCar: %s",
-                                        pt.agent, pt.sessionId != null ? pt.sessionId : "N/A", pt.cycle, pt.price, pt.event,
-                                        pt.car != null ? pt.car : "N/A"));
-                                tooltip.setShowDelay(javafx.util.Duration.millis(50));
-                                Tooltip.install(marker, tooltip);
-                                marker.setOnMouseClicked(e -> tooltip.show(marker, e.getScreenX(), e.getScreenY() + 10));
-                                marker.setCursor(javafx.scene.Cursor.HAND);
-                            }
-                        } else {
-                            Region invisibleNode = new Region();
-                            invisibleNode.setPrefSize(8, 8);
-                            invisibleNode.setStyle("-fx-background-color: transparent;");
-                            dataNode.setNode(invisibleNode);
-                            Tooltip tooltip = new Tooltip(
-                                    String.format("Agent: %s\nSession: %s\nCycle: %d\nPrice: RM %.0f\nEvent: %s\nCar: %s",
-                                            pt.agent, pt.sessionId != null ? pt.sessionId : "N/A", pt.cycle, pt.price,
-                                            pt.event, pt.car != null ? pt.car : "N/A"));
-                            tooltip.setShowDelay(javafx.util.Duration.millis(50));
-                            Tooltip.install(invisibleNode, tooltip);
-                            invisibleNode.setOnMouseClicked(
-                                    e -> tooltip.show(invisibleNode, e.getScreenX(), e.getScreenY() + 10));
-                            invisibleNode.setCursor(javafx.scene.Cursor.HAND);
-                        }
-                        series.getData().add(dataNode);
-                    }
-                    chart.getData().add(series);
-                    if (chartMode == TrajectoryMode.MARKET && series.getNode() != null) {
-                        series.getNode().setStyle("-fx-stroke: transparent;");
-                    }
-                }
-            }
-        }
-
-        // Add baselines
-        if (chartBaselinesToggle != null && chartBaselinesToggle.isSelected() && chartMode == TrajectoryMode.SESSION
-                && !ALL_SESSIONS.equals(selSession)) {
-            SessionMeta meta = sessionMetaMap.get(selSession);
-            if (meta != null) {
-                for (LineChart<Number, Number> chart : activeCharts) {
-                    int minCycle = getMinCycle(chart);
-                    int maxCycle = getMaxCycle(chart);
-
-                    if (meta.buyerReserve != null) {
-                        XYChart.Series<Number, Number> brSeries = new XYChart.Series<>();
-                        brSeries.setName("Buyer Reserve");
-                        brSeries.getData().add(new XYChart.Data<>(minCycle, meta.buyerReserve));
-                        brSeries.getData().add(new XYChart.Data<>(maxCycle, meta.buyerReserve));
-                        chart.getData().add(brSeries);
-                        if (brSeries.getNode() != null) {
-                            brSeries.getNode().setStyle("-fx-stroke: " + PRIMARY_BLUE + "; -fx-stroke-width: 2; -fx-stroke-dash-array: 5 5;");
-                        }
-                    }
-                    if (meta.dealerReserve != null) {
-                        XYChart.Series<Number, Number> drSeries = new XYChart.Series<>();
-                        drSeries.setName("Dealer Reserve");
-                        drSeries.getData().add(new XYChart.Data<>(minCycle, meta.dealerReserve));
-                        drSeries.getData().add(new XYChart.Data<>(maxCycle, meta.dealerReserve));
-                        chart.getData().add(drSeries);
-                        if (drSeries.getNode() != null) {
-                            drSeries.getNode().setStyle("-fx-stroke: " + ERROR_RED + "; -fx-stroke-width: 2; -fx-stroke-dash-array: 5 5;");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private javafx.scene.shape.Shape createMarker(TrajectoryEvent event) {
-        if (event == null)
-            return null;
-        switch (event) {
-            case ACCEPT:
-                javafx.scene.shape.Polygon star = new javafx.scene.shape.Polygon();
-                star.getPoints().addAll(0.0, -6.0, 1.8, -1.8, 6.0, -1.8, 2.7, 0.6, 4.0, 5.0, 0.0, 2.4, -4.0, 5.0, -2.7,
-                        0.6, -6.0, -1.8, -1.8, -1.8);
-                star.setFill(Color.web(SUCCESS_GREEN));
-                star.setStroke(Color.WHITE);
-                star.setStrokeWidth(1);
-                return star;
-            case COUNTER:
-                javafx.scene.shape.Polygon diamond = new javafx.scene.shape.Polygon();
-                diamond.getPoints().addAll(0.0, -4.0, 4.0, 0.0, 0.0, 4.0, -4.0, 0.0);
-                diamond.setFill(Color.web(WARNING_ORANGE));
-                diamond.setStroke(Color.WHITE);
-                diamond.setStrokeWidth(1);
-                return diamond;
-            case WALKAWAY:
-                javafx.scene.shape.Path cross = new javafx.scene.shape.Path();
-                cross.getElements().add(new javafx.scene.shape.MoveTo(-4, -4));
-                cross.getElements().add(new javafx.scene.shape.LineTo(4, 4));
-                cross.getElements().add(new javafx.scene.shape.MoveTo(4, -4));
-                cross.getElements().add(new javafx.scene.shape.LineTo(-4, 4));
-                cross.setStroke(Color.web(ERROR_RED));
-                cross.setStrokeWidth(2.5);
-                return cross;
-            case START:
-                javafx.scene.shape.Circle dot = new javafx.scene.shape.Circle(3.5);
-                dot.setFill(Color.web(PRIMARY_BLUE));
-                dot.setStroke(Color.WHITE);
-                dot.setStrokeWidth(1);
-                return dot;
-            case OFFER:
-            case PRICE_UPDATE:
-            default:
-                javafx.scene.shape.Circle defaultDot = new javafx.scene.shape.Circle(3.5);
-                defaultDot.setFill(Color.web(ACCENT_BLUE));
-                defaultDot.setStroke(Color.WHITE);
-                defaultDot.setStrokeWidth(1);
-                return defaultDot;
-        }
-    }
-
-    private int getMinCycle(LineChart<Number, Number> chart) {
-        int min = Integer.MAX_VALUE;
-        for (XYChart.Series<Number, Number> series : chart.getData()) {
-            if (series.getName() != null && series.getName().contains("Reserve"))
-                continue;
-            for (XYChart.Data<Number, Number> data : series.getData()) {
-                min = Math.min(min, data.getXValue().intValue());
-            }
-        }
-        return min == Integer.MAX_VALUE ? 0 : min;
-    }
-
-    private int getMaxCycle(LineChart<Number, Number> chart) {
-        int max = Integer.MIN_VALUE;
-        for (XYChart.Series<Number, Number> series : chart.getData()) {
-            if (series.getName() != null && series.getName().contains("Reserve"))
-                continue;
-            for (XYChart.Data<Number, Number> data : series.getData()) {
-                max = Math.max(max, data.getXValue().intValue());
-            }
-        }
-        return max == Integer.MIN_VALUE ? 100 : Math.max(max, currentCycle);
+    private String valueOrNA(String value) {
+        return value != null && !value.isBlank() ? value : "N/A";
     }
 
     public interface UILogger {
