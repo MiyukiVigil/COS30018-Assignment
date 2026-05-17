@@ -34,8 +34,10 @@ public class BuyerAgent extends Agent {
     private int    maxBudget;
     private UILogger logger;
     private NegotiationConfig config = NegotiationConfig.defaults();
+    private UtilityPreferences preferences = AppConfig.defaults().utilityPreferences();
     private boolean negotiationStarted = true;  // false = wait for manual start signal
     private boolean isManualStrategy = false;
+    private static final int MAX_DEALER_NEGOTIATIONS = 3;
 
     // ── Negotiation state ─────────────────────────────────────────────────────
     private final List<DealerOption> dealers = new ArrayList<>();
@@ -51,6 +53,7 @@ public class BuyerAgent extends Agent {
     private int    initialOffer;
     private int    currentWillingOffer;
     private NegotiationConfig.Strategy activeStrategy;
+    private NegotiationTerms currentTerms;
 
     // ── Inner types ───────────────────────────────────────────────────────────
     private static class DealerOption {
@@ -76,6 +79,7 @@ public class BuyerAgent extends Agent {
 
         initialOffer       = (int)(maxBudget * config.getBuyerStartPercent());
         currentWillingOffer = initialOffer;
+        currentTerms = buyerTermsForPrice(currentWillingOffer);
         activeStrategy     = config.getStrategy();
 
         log("STATUS: " + (negotiationStarted ? "Searching" : "Waiting to start")
@@ -190,7 +194,9 @@ public class BuyerAgent extends Agent {
         double concession = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
         currentWillingOffer = (int)(initialOffer + ((maxBudget - initialOffer) * concession));
         if (currentWillingOffer > maxBudget) currentWillingOffer = maxBudget;
-        log("Willing to pay RM" + currentWillingOffer + " for " + desiredCar);
+        currentTerms = buyerTermsForPrice(currentWillingOffer);
+        log("Willing to pay RM" + currentWillingOffer + " for " + desiredCar
+                + termsText(currentTerms));
     }
 
     /**
@@ -227,6 +233,10 @@ public class BuyerAgent extends Agent {
             int listed  = p.length > 1 ? Integer.parseInt(p[1]) : maxBudget;
             int reserve = p.length > 2 ? Integer.parseInt(p[2]) : listed;
             dealers.add(new DealerOption(p[0], listed, reserve));
+        }
+        dealers.sort((a, b) -> Integer.compare(a.listedPrice, b.listedPrice));
+        while (dealers.size() > MAX_DEALER_NEGOTIATIONS) {
+            dealers.remove(dealers.size() - 1);
         }
 
         // Check at least one dealer is affordable
@@ -273,10 +283,12 @@ public class BuyerAgent extends Agent {
             currentDealerIdx++;
         }
 
-        if (currentDealerIdx >= dealers.size()) {
+        if (dealerAttemptIndex >= MAX_DEALER_NEGOTIATIONS || currentDealerIdx >= dealers.size()) {
             if (!dealFound) {
-                log("STATUS: All dealers exhausted. No deal reached.");
-                sendNoDealReport("MAX_ROUNDS_REACHED");
+                log("STATUS: Dealer negotiation limit reached. No deal reached.");
+                if (dealerAttemptIndex == 0) {
+                    sendNoDealReport("MAX_ROUNDS_REACHED");
+                }
                 triggerMarketAction();
                 doDelete();
             }
@@ -287,12 +299,14 @@ public class BuyerAgent extends Agent {
         negotiationRound = 0;
         activeSessionId  = getLocalName() + "-" + desiredCar + "-" + dealerAttemptIndex;
 
-        // Content: "sessionId;dealerName;firstOffer;buyerReserve;carModel"
+        NegotiationTerms firstTerms = buyerTermsForPrice(currentWillingOffer);
+
+        // Content: "sessionId;dealerName;terms;buyerReserve;carModel"
         ACLMessage shortlist = new ACLMessage(ACLMessage.PROPOSE);
         shortlist.addReceiver(new AID("broker", AID.ISLOCALNAME));
         shortlist.setOntology("BUYER_SHORTLIST");
         shortlist.setContent(activeSessionId + ";" + dealer.name + ";"
-                + currentWillingOffer + ";" + maxBudget + ";" + desiredCar);
+                + firstTerms.toPayload() + ";" + maxBudget + ";" + desiredCar);
         
         addBehaviour(new WakerBehaviour(this, 400) {
             @Override
@@ -302,7 +316,7 @@ public class BuyerAgent extends Agent {
         });
 
         log("NEGOTIATION: Starting with " + dealer.name + " [session=" + activeSessionId
-                + "] @ RM" + currentWillingOffer);
+                + "] @ RM" + currentWillingOffer + termsText(firstTerms));
     }
 
     /**
@@ -313,20 +327,21 @@ public class BuyerAgent extends Agent {
         String[] p   = msg.getContent().split(";");
         String sid   = p[0];
         // p[1] = dealerName
-        int counter  = Integer.parseInt(p[2]);
+        NegotiationTerms counterTerms = NegotiationTerms.fromPayload(p[2]);
+        int counter  = counterTerms.getPrice();
         negotiationRound++;
 
         log("OFFER: [" + sid + "] Dealer counter-offered RM" + counter
-                + " (Round " + negotiationRound + ")");
+                + termsText(counterTerms) + " (Round " + negotiationRound + ")");
 
         if (isManualStrategy) {
             log("[MANUAL_PROMPT] COUNTER:" + p[1] + ":" + counter);
             return;
         }
 
-        if (counter <= currentWillingOffer) {
+        if (counter <= currentWillingOffer || acceptableUtility(counterTerms)) {
             // Deal! Send agreeing counter back via broker (broker will forward to dealer)
-            sendBuyerCounter(sid, counter);
+            sendBuyerCounter(sid, counterTerms);
             log("AGREED: Counter RM" + counter + " is within budget. Sending final offer.");
             // Note: the actual deal confirmation comes from DEALER_ACCEPT → BROKER_RELAY_ACCEPT
         } else if (negotiationRound < config.getMaxRoundsPerDealer()) {
@@ -334,10 +349,11 @@ public class BuyerAgent extends Agent {
             if (negotiationRound >= config.getStuckRoundsBeforeAcceleration()) {
                 currentWillingOffer = Math.min(maxBudget,
                         currentWillingOffer + Math.max(1, (maxBudget - currentWillingOffer) / 2));
+                currentTerms = buyerTermsForPrice(currentWillingOffer);
                 log("STATUS: Negotiation dragging. Accelerated offer to RM" + currentWillingOffer);
             }
-            sendBuyerCounter(sid, currentWillingOffer);
-            log("COUNTER: Sent RM" + currentWillingOffer + " to broker.");
+            sendBuyerCounter(sid, buyerTermsForPrice(currentWillingOffer));
+            log("COUNTER: Sent RM" + currentWillingOffer + termsText(currentTerms) + " to broker.");
             triggerMarketAction();
         } else {
             // Walk away from this dealer, try next
@@ -356,9 +372,10 @@ public class BuyerAgent extends Agent {
     private void handleBrokerRelayAccept(ACLMessage msg) {
         String[] p   = msg.getContent().split(";");
         // p[0]=sessionId, p[1]=dealerName
-        int agreedPrice = Integer.parseInt(p[2]);
+        NegotiationTerms agreedTerms = NegotiationTerms.fromPayload(p[2]);
+        int agreedPrice = agreedTerms.getPrice();
         log("SUCCESS! Purchased " + desiredCar + " for RM" + agreedPrice
-                + " from " + p[1] + " [session=" + p[0] + "]");
+                + termsText(agreedTerms) + " from " + p[1] + " [session=" + p[0] + "]");
         dealFound = true;
         triggerMarketAction();
         doDelete();
@@ -397,11 +414,11 @@ public class BuyerAgent extends Agent {
     }
 
     /** Send BUYER_COUNTER (PROPOSE / BUYER_COUNTER) to broker */
-    private void sendBuyerCounter(String sessionId, int offer) {
+    private void sendBuyerCounter(String sessionId, NegotiationTerms terms) {
         ACLMessage counter = new ACLMessage(ACLMessage.PROPOSE);
         counter.addReceiver(new AID("broker", AID.ISLOCALNAME));
         counter.setOntology("BUYER_COUNTER");
-        counter.setContent(sessionId + ";" + offer);
+        counter.setContent(sessionId + ";" + terms.toPayload());
         
         addBehaviour(new WakerBehaviour(this, 600) {
             @Override
@@ -459,7 +476,8 @@ public class BuyerAgent extends Agent {
             ACLMessage prop = new ACLMessage(ACLMessage.PROPOSE);
             prop.addReceiver(new AID("broker", AID.ISLOCALNAME));
             prop.setOntology("BUYER_SHORTLIST");
-            prop.setContent(activeSessionId + ";" + dealerName + ";" + firstOffer + ";" + maxBudget + ";" + desiredCar);
+            prop.setContent(activeSessionId + ";" + dealerName + ";" + buyerTermsForPrice(firstOffer).toPayload()
+                    + ";" + maxBudget + ";" + desiredCar);
             send(prop);
             
             log("MANUAL: Sent first offer RM" + firstOffer + " to " + dealerName);
@@ -473,7 +491,7 @@ public class BuyerAgent extends Agent {
             ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
             counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
             counterMsg.setOntology("BUYER_COUNTER");
-            counterMsg.setContent(activeSessionId + ";" + price);
+            counterMsg.setContent(activeSessionId + ";" + buyerTermsForPrice(price).toPayload());
             send(counterMsg);
             log("MANUAL: Sent counter offer RM" + price);
             
@@ -486,7 +504,7 @@ public class BuyerAgent extends Agent {
             ACLMessage counterMsg = new ACLMessage(ACLMessage.PROPOSE);
             counterMsg.addReceiver(new AID("broker", AID.ISLOCALNAME));
             counterMsg.setOntology("BUYER_COUNTER");
-            counterMsg.setContent(activeSessionId + ";" + price);
+            counterMsg.setContent(activeSessionId + ";" + buyerTermsForPrice(price).toPayload());
             send(counterMsg);
             log("MANUAL: Sent acceptance price RM" + price);
             
@@ -516,5 +534,26 @@ public class BuyerAgent extends Agent {
     private String strategySwitchText() {
         if (config.getStrategySwitchCycle() <= 0 || config.getSwitchStrategy() == config.getStrategy()) return "";
         return " → " + config.getSwitchStrategy() + " at cycle " + config.getStrategySwitchCycle();
+    }
+
+    private NegotiationTerms buyerTermsForPrice(int price) {
+        double progress = (double) Math.max(0, price - initialOffer) / Math.max(1, maxBudget - initialOffer);
+        int defaultWarranty = preferences.getDefaultWarrantyMonths();
+        int warranty = defaultWarranty + (int) Math.round(defaultWarranty * progress);
+        int defaultDelivery = preferences.getDefaultDeliveryDays();
+        int delivery = Math.max(3, defaultDelivery - (int) Math.round((defaultDelivery - 3) * progress));
+        return new NegotiationTerms(price, warranty, delivery);
+    }
+
+    private boolean acceptableUtility(NegotiationTerms terms) {
+        double utility = preferences.buyerUtility(terms, maxBudget,
+                preferences.getDefaultWarrantyMonths() * 2,
+                preferences.getDefaultDeliveryDays());
+        return terms.getPrice() <= maxBudget && utility >= 0.35;
+    }
+
+    private String termsText(NegotiationTerms terms) {
+        return " | Warranty=" + terms.getWarrantyMonths() + " months | Delivery="
+                + terms.getDeliveryDays() + " days";
     }
 }

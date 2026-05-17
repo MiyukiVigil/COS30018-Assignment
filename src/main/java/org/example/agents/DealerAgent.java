@@ -35,6 +35,7 @@ public class DealerAgent extends Agent {
     private UILogger logger;
     private int    negotiationCount = 0;
     private NegotiationConfig config = NegotiationConfig.defaults();
+    private UtilityPreferences preferences = AppConfig.defaults().utilityPreferences();
     private int    stockCount;
     private int    manualTargetPrice = -1;
     private NegotiationConfig.Strategy activeStrategy;
@@ -44,15 +45,15 @@ public class DealerAgent extends Agent {
         String sessionId;
         String buyerName;
         String carModel;
-        int latestOffer;
+        NegotiationTerms latestTerms;
         int rounds;
         String status;
 
-        DealerSessionState(String sessionId, String buyerName, String carModel, int latestOffer) {
+        DealerSessionState(String sessionId, String buyerName, String carModel, NegotiationTerms latestTerms) {
             this.sessionId = sessionId;
             this.buyerName = buyerName;
             this.carModel = carModel;
-            this.latestOffer = latestOffer;
+            this.latestTerms = latestTerms;
             this.status = "NEGOTIATING";
         }
     }
@@ -170,20 +171,33 @@ public class DealerAgent extends Agent {
             return;
         }
 
-        // p[1] = buyerName, p[2] = carModel — available for logging / Extension 1 per-session state
-        int buyerOffer    = Integer.parseInt(p[3]);
+        NegotiationTerms buyerTerms = NegotiationTerms.fromPayload(p[3]);
+        int buyerOffer = buyerTerms.getPrice();
         DealerSessionState state = activeSessions.computeIfAbsent(sessionId,
-                id -> new DealerSessionState(id, buyerName, carModel, buyerOffer));
+                id -> new DealerSessionState(id, buyerName, carModel, buyerTerms));
         state.buyerName = buyerName;
         state.carModel = carModel;
-        state.latestOffer = buyerOffer;
+        state.latestTerms = buyerTerms;
         state.rounds++;
         negotiationCount++;
 
         log("OFFER #" + negotiationCount + ": [" + sessionId + "] Buyer offered RM" + buyerOffer
-                + " (target=RM" + currentTargetPrice + ")");
+                + termsText(buyerTerms) + " (target=RM" + currentTargetPrice + ")");
 
-        if (buyerOffer >= currentTargetPrice) {
+        if (state.rounds == 1 && isClearlyUnworkableFirstOffer(buyerTerms)) {
+            state.status = "REJECTED";
+            activeSessions.remove(sessionId);
+            ACLMessage reject = new ACLMessage(ACLMessage.REJECT_PROPOSAL);
+            reject.addReceiver(new AID("broker", AID.ISLOCALNAME));
+            reject.setOntology("DEALER_REJECT");
+            reject.setContent(sessionId + ";DEALER_REJECTED_UNWORKABLE_FIRST_OFFER");
+            send(reject);
+            log("STATUS: Rejected buyer " + buyerName + " for " + carModel
+                    + " because first offer terms are too far below reserve.");
+            return;
+        }
+
+        if (buyerOffer >= currentTargetPrice || acceptableUtility(buyerTerms)) {
             // Accept — decrement stock and remove this session from active set
             stockCount--;
             state.status = "SETTLED";
@@ -192,7 +206,7 @@ public class DealerAgent extends Agent {
             ACLMessage accept = new ACLMessage(ACLMessage.ACCEPT_PROPOSAL);
             accept.addReceiver(new AID("broker", AID.ISLOCALNAME));
             accept.setOntology("DEALER_ACCEPT");
-            accept.setContent(sessionId + ";" + buyerOffer);
+            accept.setContent(sessionId + ";" + buyerTerms.toPayload());
 
             // Snapshot remaining sessions at the exact moment of stock-out
             final boolean isStockOutTrigger = (stockCount == 0);
@@ -227,14 +241,16 @@ public class DealerAgent extends Agent {
                     }
                 }
             });
-            log("DEAL CLOSED: [" + sessionId + "] RM" + buyerOffer + " | Stock: " + stockCount);
+            log("DEAL CLOSED: [" + sessionId + "] RM" + buyerOffer + termsText(buyerTerms)
+                    + " | Stock: " + stockCount);
         } else {
             state.status = "COUNTERED";
+            NegotiationTerms counterTerms = dealerCounterTerms();
             // Counter-offer
             ACLMessage counter = new ACLMessage(ACLMessage.REJECT_PROPOSAL);
             counter.addReceiver(new AID("broker", AID.ISLOCALNAME));
             counter.setOntology("DEALER_COUNTER");
-            counter.setContent(sessionId + ";" + currentTargetPrice);
+            counter.setContent(sessionId + ";" + counterTerms.toPayload());
             
             addBehaviour(new jade.core.behaviours.WakerBehaviour(this, 600) {
                 @Override
@@ -243,7 +259,7 @@ public class DealerAgent extends Agent {
                     notifySpace();
                 }
             });
-            log("COUNTER: [" + sessionId + "] RM" + currentTargetPrice);
+            log("COUNTER: [" + sessionId + "] RM" + currentTargetPrice + termsText(counterTerms));
         }
     }
 
@@ -272,5 +288,34 @@ public class DealerAgent extends Agent {
     private String strategySwitchText() {
         if (config.getStrategySwitchCycle() <= 0 || config.getSwitchStrategy() == config.getStrategy()) return "";
         return " → " + config.getSwitchStrategy() + " at cycle " + config.getStrategySwitchCycle();
+    }
+
+    private NegotiationTerms dealerCounterTerms() {
+        double concession = (double) Math.max(0, retailPrice - currentTargetPrice)
+                / Math.max(1, retailPrice - minPrice);
+        int defaultWarranty = preferences.getDefaultWarrantyMonths();
+        int warranty = Math.max(3, defaultWarranty - (int) Math.round(defaultWarranty * 0.5 * concession));
+        int defaultDelivery = preferences.getDefaultDeliveryDays();
+        int delivery = defaultDelivery + (int) Math.round(defaultDelivery * concession);
+        return new NegotiationTerms(currentTargetPrice, warranty, delivery);
+    }
+
+    private boolean acceptableUtility(NegotiationTerms terms) {
+        double utility = preferences.dealerUtility(terms, retailPrice, minPrice,
+                preferences.getDefaultWarrantyMonths() * 2,
+                preferences.getDefaultDeliveryDays() * 2);
+        return terms.getPrice() >= minPrice && utility >= 0.45;
+    }
+
+    private boolean isClearlyUnworkableFirstOffer(NegotiationTerms terms) {
+        double utility = preferences.dealerUtility(terms, retailPrice, minPrice,
+                preferences.getDefaultWarrantyMonths() * 2,
+                preferences.getDefaultDeliveryDays() * 2);
+        return terms.getPrice() < (int) (minPrice * 0.60) && utility < 0.05;
+    }
+
+    private String termsText(NegotiationTerms terms) {
+        return " | Warranty=" + terms.getWarrantyMonths() + " months | Delivery="
+                + terms.getDeliveryDays() + " days";
     }
 }

@@ -132,19 +132,24 @@ Shows system-level information:
 - negotiation price trajectory chart
 - setup status messages
 
+### Participants Page
+
+The Participants page contains matched Dealer Portal and Buyer Portal panels. Register dealers first so their inventory is available to the broker, then add buyers in a waiting state. Buyers do not negotiate immediately; they wait until the global `Start` button is pressed.
+
 ### Buyer Portal
 
-Creates buyer agents. A buyer is not started immediately. It waits until the global `Start` button is pressed.
+Creates buyer agents with a desired vehicle and maximum budget. Optional manual negotiation mode lets the user drive that buyer's offers from the Manual Negotiation page.
 
 Inputs:
 
 - buyer name
 - desired car
 - maximum budget
+- manual negotiation mode toggle
 
 ### Dealer Portal
 
-Creates dealer agents and lists inventory with the broker.
+Creates dealer agents and lists inventory with the broker. Dealer listings include the retail price and stock quantity; the configured reserve percentage is used to calculate the dealer reserve price.
 
 Inputs:
 
@@ -203,9 +208,9 @@ Main behaviour:
 2. Sends `REQUEST` to the broker for the desired car.
 3. Receives dealer options from the broker.
 4. Checks whether any dealer reserve price is within the buyer budget.
-5. Sends `PROPOSE` offers to dealers.
+5. Chooses up to three best dealer options and sends first-offer terms through the broker.
 6. Handles `REJECT_PROPOSAL` counter-offers.
-7. Sends a revised `PROPOSE` if still negotiating.
+7. Sends revised multi-attribute terms if still negotiating.
 8. Handles `ACCEPT_PROPOSAL` and confirms the deal to the broker.
 9. Sends no-deal confirmation if budget, retry, or round limits are exceeded.
 
@@ -229,11 +234,12 @@ Main behaviour:
 1. Registers its car listing with the broker.
 2. Registers with `SpaceControl` to receive cycle updates.
 3. Calculates a dynamic target price each cycle.
-4. Receives buyer `PROPOSE` messages.
-5. Accepts if the buyer offer is at least the current target price.
-6. Rejects with a counter-offer if the buyer offer is too low.
-7. Reduces stock after a successful sale.
-8. Terminates when stock reaches zero.
+4. Receives buyer first-offer terms from the broker.
+5. Selects whether to engage the buyer; clearly unworkable first offers can be rejected.
+6. Accepts if the buyer terms meet price/utility targets.
+7. Rejects with multi-attribute counter-terms if the buyer offer is too low.
+8. Reduces stock after a successful sale.
+9. Terminates when stock reaches zero.
 
 Important state:
 
@@ -297,14 +303,15 @@ Examples:
 | Dealer | Broker | `INFORM` | empty | `car;retailPrice;stock;reservePrice` | Dealer lists inventory. |
 | Buyer | Broker | `REQUEST` | `BUYER_SEARCH` | `searchId;desiredCar` | Buyer searches for matching car. |
 | Broker | Buyer | `PROPOSE` | `BROKER_SHORTLIST` | `searchId;dealer:price:reserve,...` or `searchId;NONE` | Broker returns matching dealers. |
-| Buyer | Broker | `PROPOSE` | `BUYER_SHORTLIST` | `sessionId;dealerName;firstOffer;buyerReserve;carModel` | Buyer selects dealer and starts a broker session. |
-| Broker | Dealer | `REQUEST` | `BROKER_INVITE` | `sessionId;buyerName;carModel;offer` | Broker routes the first buyer offer. |
-| Dealer | Broker | `REJECT_PROPOSAL` | `DEALER_COUNTER` | `sessionId;counterPrice` | Dealer counters through broker. |
-| Broker | Buyer | `REJECT_PROPOSAL` | `BROKER_RELAY_COUNTER` | `sessionId;dealerName;counterPrice` | Broker routes dealer counter to buyer. |
-| Buyer | Broker | `PROPOSE` | `BUYER_COUNTER` | `sessionId;newOffer` | Buyer counters through broker. |
-| Broker | Dealer | `PROPOSE` | `BROKER_RELAY_OFFER` | `sessionId;buyerName;carModel;offer` | Broker routes buyer counter to dealer. |
-| Dealer | Broker | `ACCEPT_PROPOSAL` | `DEALER_ACCEPT` | `sessionId;agreedPrice` | Dealer accepts through broker. |
-| Broker | Buyer | `ACCEPT_PROPOSAL` | `BROKER_RELAY_ACCEPT` | `sessionId;dealerName;agreedPrice` | Broker confirms successful deal. |
+| Buyer | Broker | `PROPOSE` | `BUYER_SHORTLIST` | `sessionId;dealerName;price:warrantyMonths:deliveryDays;buyerReserve;carModel` | Buyer selects a dealer and starts a broker session. |
+| Broker | Dealer | `REQUEST` | `BROKER_INVITE` | `sessionId;buyerName;carModel;price:warrantyMonths:deliveryDays` | Broker routes the first buyer offer. |
+| Dealer | Broker | `REJECT_PROPOSAL` | `DEALER_REJECT` | `sessionId;reason` | Dealer declines to engage a low-value first offer. |
+| Dealer | Broker | `REJECT_PROPOSAL` | `DEALER_COUNTER` | `sessionId;price:warrantyMonths:deliveryDays` | Dealer counters through broker. |
+| Broker | Buyer | `REJECT_PROPOSAL` | `BROKER_RELAY_COUNTER` | `sessionId;dealerName;price:warrantyMonths:deliveryDays` | Broker routes dealer counter to buyer. |
+| Buyer | Broker | `PROPOSE` | `BUYER_COUNTER` | `sessionId;price:warrantyMonths:deliveryDays` | Buyer counters through broker. |
+| Broker | Dealer | `PROPOSE` | `BROKER_RELAY_OFFER` | `sessionId;buyerName;carModel;price:warrantyMonths:deliveryDays` | Broker routes buyer counter to dealer. |
+| Dealer | Broker | `ACCEPT_PROPOSAL` | `DEALER_ACCEPT` | `sessionId;price:warrantyMonths:deliveryDays` | Dealer accepts through broker. |
+| Broker | Buyer | `ACCEPT_PROPOSAL` | `BROKER_RELAY_ACCEPT` | `sessionId;dealerName;price:warrantyMonths:deliveryDays` | Broker confirms successful deal. |
 | Buyer | Broker | `FAILURE` | `BUYER_WALKAWAY` | `sessionId;reason[;car;budget]` | Buyer reports failed negotiation or pre-session failure. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `REGISTER` | empty | Agent joins cycle updates. |
 | Buyer/Dealer | SpaceControl | `INFORM` | `DEREGISTER` | empty | Agent leaves cycle updates. |
@@ -585,6 +592,7 @@ Configurable values:
 - `maxRoundsPerDealer`: failed rounds allowed before trying the next dealer.
 - `maxSearchRetries`: broker search retries before giving up.
 - `stuckRoundsBeforeAcceleration`: round threshold for accelerated buyer concession.
+- Utility defaults in `negotiation-defaults.properties`: price, warranty, and delivery weights for multi-attribute negotiation.
 
 Because configuration is passed during agent creation, you can run different experiments without editing Java code.
 
@@ -595,7 +603,8 @@ Because configuration is passed during agent creation, you can run different exp
 | Buyer's budget is too low | Buyer checks dealer reserve prices and immediately reports `NO_DEAL;BUDGET_TOO_LOW`. |
 | No matching car found | Buyer retries up to the configured retry limit, then reports `NO_DEAL;NO_MATCHING_CAR`. |
 | Negotiation stuck | Buyer accelerates concession after the configured stuck-round threshold. |
-| Too many failed rounds | Buyer moves to another dealer or reports `NO_DEAL;MAX_ROUNDS_REACHED`. |
+| Too many failed rounds | Buyer moves to another dealer, up to three dealers, or reports `NO_DEAL;MAX_ROUNDS_REACHED`. |
+| Dealer rejects first offer | Only clearly unworkable first offers are rejected; otherwise the dealer sends a counter-offer. |
 | User presses Stop | Buyer reports `NO_DEAL;USER_STOPPED`. |
 | Dealer stock reaches zero | Dealer logs out of stock and terminates. |
 | New dealer joins mid-simulation | Broker stores the listing, and future buyer searches can find the new dealer. |
@@ -605,19 +614,20 @@ Because configuration is passed during agent creation, you can run different exp
 
 The JADE Sniffer is used to show real ACL messages between agents. It is useful for proving that the system is using agent communication rather than only Java method calls or UI logs.
 
-The app launches Sniffer with a focused preload for `broker` and `space`. Because all negotiation messages are routed through the broker, this still shows the buyer-broker and broker-dealer ACL traffic while avoiding short-lived buyer/dealer agents that may delete themselves and cause JADE AMS warnings.
+The app launches Sniffer only when the `Sniffer` button is pressed. It preloads `broker`, `space`, and the currently registered buyer/dealer agents so the demo can show broker-routed traffic across the broker, buyers, dealers, and cycle controller without opening extra Sniffer windows during startup or agent creation.
 
 How to use it:
 
 1. Start the application.
-2. Open Sniffer using the global `Sniffer` button if it is not already open.
-3. If agents are not shown automatically, manually select the agents you want to observe:
+2. Create the agents first by pressing `Demo Setup` or by adding custom dealers and buyers.
+3. Open Sniffer using the global `Sniffer` button before pressing `Start`.
+4. The app preselects the main live agents:
    - `broker`
    - `space`
    - buyer agent names
    - dealer agent names
-4. Start negotiation.
-5. Watch the arrows between agents.
+5. Start negotiation.
+6. Watch the arrows between agents.
 
 Expected message arrows:
 
@@ -627,7 +637,7 @@ Expected message arrows:
 - Dealer to Broker: `DEALER_COUNTER`, `DEALER_ACCEPT`, `DEALER_SOLD_OUT`
 - SpaceControl to Buyer/Dealer: `CYCLE_UPDATE`
 
-If the Sniffer window appears empty, close old Sniffer windows, click `Sniffer` again, then start negotiation. If needed, select agents manually in the Sniffer interface before pressing `Start`.
+If the Sniffer window appears empty, close old Sniffer windows, click `Sniffer` again, then start negotiation. If JADE prints `Agent not found... sniffOffAction` after a demo run, it means Sniffer was still monitoring a buyer/dealer that already finished and deleted itself; the negotiation result is not affected. Close old Sniffer windows before repeating a demo to avoid stale lifelines.
 
 ## Performance Metrics
 

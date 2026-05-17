@@ -16,9 +16,10 @@ import jade.lang.acl.ACLMessage;
  * Message ontologies handled (inbound):
  *   ""               — Dealer registration (INFORM, empty ontology)
  *   BUYER_SEARCH     — Buyer requests shortlist (REQUEST)
- *   BUYER_SHORTLIST  — Buyer selects dealer + first offer (PROPOSE) → creates session
+ *   BUYER_SHORTLIST  — Buyer selects dealer + first offer terms (PROPOSE) → creates session
  *   DEALER_COUNTER   — Dealer rejects with counter (REJECT_PROPOSAL) → relayed to buyer
  *   DEALER_ACCEPT    — Dealer accepts offer (ACCEPT_PROPOSAL) → settle session
+ *   DEALER_REJECT    — Dealer declines buyer's first offer before negotiation
  *   BUYER_COUNTER    — Buyer counter-offer (PROPOSE) → relayed to dealer
  *   BUYER_WALKAWAY   — Buyer gives up on session (FAILURE) → close session
  */
@@ -53,7 +54,7 @@ public class BrokerAgent extends Agent {
         public final String buyerId;
         public final String dealerId;
         public final String carModel;
-        public int    currentOffer;
+        public NegotiationTerms currentTerms;
         public int    buyerReserve;
         public int    round;
         public SessionStatus status;
@@ -61,12 +62,12 @@ public class BrokerAgent extends Agent {
         public boolean feeCharged;
 
         public NegotiationSession(String sid, String buyer, String dealer,
-                                  String car, int firstOffer, int reserve) {
+                                  String car, NegotiationTerms firstTerms, int reserve) {
             sessionId   = sid;
             buyerId     = buyer;
             dealerId    = dealer;
             carModel    = car;
-            currentOffer = firstOffer;
+            currentTerms = firstTerms;
             buyerReserve = reserve;
             round       = 0;
             status      = SessionStatus.NEGOTIATING;
@@ -109,6 +110,7 @@ public class BrokerAgent extends Agent {
                     case "BUYER_SHORTLIST":handleBuyerShortlist(msg);  break;
                     case "DEALER_COUNTER": handleDealerCounter(msg);   break;
                     case "DEALER_ACCEPT":  handleDealerAccept(msg);    break;
+                    case "DEALER_REJECT":  handleDealerReject(msg);    break;
                     case "DEALER_SOLD_OUT":handleDealerSoldOut(msg);   break;
                     case "BUYER_COUNTER":  handleBuyerCounter(msg);    break;
                     case "BUYER_WALKAWAY": handleBuyerWalkaway(msg);   break;
@@ -168,7 +170,7 @@ public class BrokerAgent extends Agent {
 
     /**
      * Buyer shortlist submission: PROPOSE / BUYER_SHORTLIST
-     * Content: "sessionId;dealerName;firstOffer;buyerReserve;carModel"
+     * Content: "sessionId;dealerName;terms;buyerReserve;carModel"
      * → Creates session, charges fixed fee, invites dealer.
      */
     private void handleBuyerShortlist(ACLMessage msg) {
@@ -179,7 +181,7 @@ public class BrokerAgent extends Agent {
         }
         String sessionId  = p[0];
         String dealerName = p[1];
-        int firstOffer    = Integer.parseInt(p[2]);
+        NegotiationTerms firstTerms = NegotiationTerms.fromPayload(p[2]);
         int buyerReserve  = Integer.parseInt(p[3]);
         String carModel   = p[4];
         String buyerName  = msg.getSender().getLocalName();
@@ -196,7 +198,7 @@ public class BrokerAgent extends Agent {
         }
 
         NegotiationSession session = new NegotiationSession(
-                sessionId, buyerName, dealerName, carModel, firstOffer, buyerReserve);
+                sessionId, buyerName, dealerName, carModel, firstTerms, buyerReserve);
         sessions.put(sessionId, session);
 
         int dealerReserve = lookupDealerReserve(dealerName, carModel);
@@ -205,7 +207,8 @@ public class BrokerAgent extends Agent {
         totalRevenue += appConfig.fixedFee();
         session.feeCharged = true;
         log("SESSION START: " + sessionId + " | Buyer=" + buyerName
-            + " | Dealer=" + dealerName + " | Car=" + carModel + " | FirstOffer=RM" + firstOffer
+            + " | Dealer=" + dealerName + " | Car=" + carModel + " | FirstOffer=RM" + firstTerms.getPrice()
+            + " | Warranty=" + firstTerms.getWarrantyMonths() + " months | Delivery=" + firstTerms.getDeliveryDays() + " days"
             + " | BuyerReserve=RM" + buyerReserve
             + (dealerReserve > 0 ? " | DealerReserve=RM" + dealerReserve : ""));
         log("FEE CHARGED: RM" + (int) appConfig.fixedFee() + " | Running Revenue: RM" + (int) totalRevenue);
@@ -214,19 +217,21 @@ public class BrokerAgent extends Agent {
         ACLMessage invite = new ACLMessage(ACLMessage.REQUEST);
         invite.addReceiver(new AID(dealerName, AID.ISLOCALNAME));
         invite.setOntology("BROKER_INVITE");
-        invite.setContent(sessionId + ";" + buyerName + ";" + carModel + ";" + firstOffer);
+        invite.setContent(sessionId + ";" + buyerName + ";" + carModel + ";" + firstTerms.toPayload());
         send(invite);
-        log("INVITE: Sent RM" + firstOffer + " offer to " + dealerName);
+        log("INVITE: Sent RM" + firstTerms.getPrice() + " offer to " + dealerName
+                + " | Warranty=" + firstTerms.getWarrantyMonths() + " months | Delivery="
+                + firstTerms.getDeliveryDays() + " days");
     }
 
     /**
-     * Dealer counter: REJECT_PROPOSAL / DEALER_COUNTER / "sessionId;counterPrice"
+     * Dealer counter: REJECT_PROPOSAL / DEALER_COUNTER / "sessionId;counterTerms"
      * → Relay counter to buyer.
      */
     private void handleDealerCounter(ACLMessage msg) {
         String[] p = msg.getContent().split(";", 2);
         String sessionId = p[0];
-        int counter      = Integer.parseInt(p[1]);
+        NegotiationTerms counter = NegotiationTerms.fromPayload(p[1]);
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in DEALER_COUNTER: " + sessionId); return; }
         if (s.status != SessionStatus.NEGOTIATING) {
@@ -235,25 +240,28 @@ public class BrokerAgent extends Agent {
         }
 
         s.round++;
-        s.currentOffer = counter;
+        s.currentTerms = counter;
         log("RELAY COUNTER: " + sessionId + " | Dealer=" + s.dealerId
-                + " → Buyer=" + s.buyerId + " | RM" + counter + " (Round " + s.round + ")");
+                + " → Buyer=" + s.buyerId + " | RM" + counter.getPrice()
+                + " | Warranty=" + counter.getWarrantyMonths() + " months | Delivery="
+                + counter.getDeliveryDays() + " days (Round " + s.round + ")");
 
         ACLMessage relay = new ACLMessage(ACLMessage.REJECT_PROPOSAL);
         relay.addReceiver(new AID(s.buyerId, AID.ISLOCALNAME));
         relay.setOntology("BROKER_RELAY_COUNTER");
-        relay.setContent(sessionId + ";" + s.dealerId + ";" + counter);
+        relay.setContent(sessionId + ";" + s.dealerId + ";" + counter.toPayload());
         send(relay);
     }
 
     /**
-     * Dealer accept: ACCEPT_PROPOSAL / DEALER_ACCEPT / "sessionId;agreedPrice"
+     * Dealer accept: ACCEPT_PROPOSAL / DEALER_ACCEPT / "sessionId;agreedTerms"
      * → Charge commission, settle session, notify buyer.
      */
     private void handleDealerAccept(ACLMessage msg) {
         String[] p    = msg.getContent().split(";", 2);
         String sessionId  = p[0];
-        int agreedPrice   = Integer.parseInt(p[1]);
+        NegotiationTerms agreedTerms = NegotiationTerms.fromPayload(p[1]);
+        int agreedPrice = agreedTerms.getPrice();
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in DEALER_ACCEPT: " + sessionId); return; }
         if (s.status != SessionStatus.NEGOTIATING) {
@@ -263,6 +271,7 @@ public class BrokerAgent extends Agent {
 
         s.round++;
         s.status = SessionStatus.SETTLED;
+        s.currentTerms = agreedTerms;
         double commission = agreedPrice * appConfig.commissionRate();
         totalRevenue   += commission;
         totalDealRounds += s.round;
@@ -271,6 +280,8 @@ public class BrokerAgent extends Agent {
 
         log("DEAL SETTLED: " + sessionId + " | Buyer=" + s.buyerId + " | Dealer=" + s.dealerId
                 + " | Car=" + s.carModel + " | Price=RM" + agreedPrice
+                + " | Warranty=" + agreedTerms.getWarrantyMonths() + " months | Delivery="
+                + agreedTerms.getDeliveryDays() + " days"
                 + " | Commission=RM" + (int) commission + " | Fee=RM" + (int) appConfig.fixedFee() + " (charged at start)");
         log("REVENUE: +RM" + (int) commission + " commission | Total: RM" + (int) totalRevenue);
         log("TOTAL TRANSACTIONS: " + transactions.size());
@@ -280,18 +291,18 @@ public class BrokerAgent extends Agent {
         ACLMessage notify = new ACLMessage(ACLMessage.ACCEPT_PROPOSAL);
         notify.addReceiver(new AID(s.buyerId, AID.ISLOCALNAME));
         notify.setOntology("BROKER_RELAY_ACCEPT");
-        notify.setContent(sessionId + ";" + s.dealerId + ";" + agreedPrice);
+        notify.setContent(sessionId + ";" + s.dealerId + ";" + agreedTerms.toPayload());
         send(notify);
     }
 
     /**
-     * Buyer counter: PROPOSE / BUYER_COUNTER / "sessionId;newOffer"
+     * Buyer counter: PROPOSE / BUYER_COUNTER / "sessionId;newTerms"
      * → Relay new offer to dealer.
      */
     private void handleBuyerCounter(ACLMessage msg) {
         String[] p = msg.getContent().split(";", 2);
         String sessionId = p[0];
-        int newOffer     = Integer.parseInt(p[1]);
+        NegotiationTerms newTerms = NegotiationTerms.fromPayload(p[1]);
         NegotiationSession s = sessions.get(sessionId);
         if (s == null) { log("ERROR: Unknown session in BUYER_COUNTER: " + sessionId); return; }
         if (s.status != SessionStatus.NEGOTIATING) {
@@ -299,15 +310,38 @@ public class BrokerAgent extends Agent {
             return;
         }
 
-        s.currentOffer = newOffer;
+        s.currentTerms = newTerms;
         log("RELAY OFFER: " + sessionId + " | Buyer=" + s.buyerId
-                + " → Dealer=" + s.dealerId + " | RM" + newOffer);
+                + " → Dealer=" + s.dealerId + " | RM" + newTerms.getPrice()
+                + " | Warranty=" + newTerms.getWarrantyMonths() + " months | Delivery="
+                + newTerms.getDeliveryDays() + " days");
 
         ACLMessage relay = new ACLMessage(ACLMessage.PROPOSE);
         relay.addReceiver(new AID(s.dealerId, AID.ISLOCALNAME));
         relay.setOntology("BROKER_RELAY_OFFER");
-        relay.setContent(sessionId + ";" + s.buyerId + ";" + s.carModel + ";" + newOffer);
+        relay.setContent(sessionId + ";" + s.buyerId + ";" + s.carModel + ";" + newTerms.toPayload());
         send(relay);
+    }
+
+    private void handleDealerReject(ACLMessage msg) {
+        String[] p = msg.getContent().split(";", 2);
+        String sessionId = p[0];
+        String reason = p.length > 1 ? p[1] : "DEALER_REJECTED_OFFER";
+        NegotiationSession s = sessions.get(sessionId);
+        if (s == null || s.status != SessionStatus.NEGOTIATING) {
+            return;
+        }
+        s.status = SessionStatus.FAILED;
+        noDealCount++;
+        log("NO DEAL: " + sessionId + " | Reason=" + reason + " | Buyer=" + s.buyerId
+                + " | Dealer=" + s.dealerId + " | Car=" + s.carModel);
+        logPerformanceMetrics();
+
+        ACLMessage notify = new ACLMessage(ACLMessage.FAILURE);
+        notify.addReceiver(new AID(s.buyerId, AID.ISLOCALNAME));
+        notify.setOntology("BROKER_SESSION_REJECTED");
+        notify.setContent(sessionId + ";" + reason);
+        send(notify);
     }
 
     /**

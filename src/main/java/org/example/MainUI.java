@@ -55,6 +55,7 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
@@ -68,12 +69,14 @@ public class MainUI extends Application {
     private Label buyerCountLabel = new Label("0");
     private Label dealerCountLabel = new Label("0");
     private Label transactionCountLabel = new Label("0");
+    private Label failedDealsCountLabel = new Label("0");
     private Label revenueLabel = new Label("RM 0.00");
     private ContainerController cc;
     private UILogger appLogger;
     private int buyerCount = 0;
     private int dealerCount = 0;
     private int dealsClosed = 0;
+    private int failedDealsCount = 0;
     private double totalRevenue = 0;
     private DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
     private Label dealerStatusLabel = new Label();
@@ -124,6 +127,8 @@ public class MainUI extends Application {
     private Button manualAcceptDealBtn;
     private Button manualWalkAwayBtn;
     private List<String> failedDeals = new ArrayList<>();
+    private final Map<String, Integer> failureReasonCounts = new LinkedHashMap<>();
+    private TextArea failureReportArea = new TextArea();
     private TextArea failuresArea = new TextArea();
     private TextArea sessionsArea = new TextArea();
     private TextArea dashboardEventsArea;
@@ -132,6 +137,7 @@ public class MainUI extends Application {
     private Label fixedFeesLabel = new Label("RM 0");
     private Label fixedFeesLabelMini = new Label("RM 0");
     private Label commissionLabel = new Label("RM 0");
+    private Label commissionLabelMini = new Label("RM 0");
     private double totalFixedFees = 0;
     private double totalCommission = 0;
     private int activeSessions = 0;
@@ -157,6 +163,12 @@ public class MainUI extends Application {
     private static final String FONT_FAMILY = "'Poppins', 'Segoe UI', Arial";
     private static final String FONT_WEIGHT_MEDIUM = "500";
     private static final String SOFT_SHADOW = "dropshadow(gaussian, rgba(30,64,175,0.10), 14, 0, 0, 4)";
+    private static final String CARD_SHADOW = "dropshadow(gaussian, rgba(15,23,42,0.10), 18, 0, 0, 6)";
+    private static final String PANEL_STYLE = "-fx-background-color: " + SURFACE + "; -fx-background-radius: 14;"
+            + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-border-radius: 14;"
+            + "-fx-effect: " + CARD_SHADOW + ";";
+    private static final String SOFT_PANEL_STYLE = "-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 12;"
+            + "-fx-border-color: #dbeafe; -fx-border-width: 1; -fx-border-radius: 12;";
 
     // Popular Car Models Database
     private static final String[] CAR_MODELS = {
@@ -269,6 +281,9 @@ public class MainUI extends Application {
                     handleManualPromptLog(msg);
                     return;
                 }
+                if (msg.contains(": Terminating")) {
+                    unregisterTerminatedAgent(msg);
+                }
 
                 // ── Activity log (filter to meaningful events) ────────────────
                 if (isSetupMsg || isBuyerReg || isDealerReg || isCycleShift
@@ -336,6 +351,7 @@ public class MainUI extends Application {
                                 totalCommission += commission;
                                 totalRevenue += commission;
                                 commissionLabel.setText("RM " + (int) totalCommission);
+                                commissionLabelMini.setText("RM " + (int) totalCommission);
                                 revenueLabel.setText(String.format("RM %.2f", totalRevenue));
                             }
                         }
@@ -344,11 +360,14 @@ public class MainUI extends Application {
                 }
 
                 if (isNoDeal) {
+                    failedDealsCount++;
+                    failedDealsCountLabel.setText(String.valueOf(failedDealsCount));
                     if (activeSessions > 0)
                         activeSessions--;
                     activeSessionsLabel.setText(String.valueOf(activeSessions));
                     activeSessionsLabelMini.setText(String.valueOf(activeSessions));
                     failedDeals.add(formattedMsg);
+                    recordFailureReport(msg);
                     failuresArea.appendText(formattedMsg);
                     sessionsArea.appendText(formattedMsg);
                 }
@@ -370,7 +389,6 @@ public class MainUI extends Application {
 
         cc.createNewAgent("broker", "org.example.agents.BrokerAgent", new Object[] { logger }).start();
         cc.createNewAgent("space", "org.example.agents.SpaceControl", new Object[] { logger }).start();
-        launchSniffer(logger);
 
         VBox mainContent = createMainContent(logger);
 
@@ -521,13 +539,11 @@ public class MainUI extends Application {
             SessionMeta meta = sessionMetaMap.computeIfAbsent(sessionId, SessionMeta::new);
             hydrateSessionMeta(meta, payload);
             Double lastPrice = sessionLastPrice.get(sessionId);
-            if (lastPrice == null)
-                return null;
             meta.outcomeStatus = "NO DEAL";
             meta.outcomePrice = lastPrice;
             meta.outcomeCycle = currentCycle;
             meta.failureReason = extractReason(payload);
-            return new TrajectoryPoint(currentCycle, lastPrice, meta.buyer, sessionId, meta.car,
+            return new TrajectoryPoint(currentCycle, lastPrice != null ? lastPrice : 0, meta.buyer, sessionId, meta.car,
                     TrajectoryEvent.WALKAWAY);
         }
 
@@ -623,26 +639,32 @@ public class MainUI extends Application {
         String car = extractBrokerField(payload, "Car");
         String price = extractBrokerField(payload, "Price");
         String reason = extractBrokerField(payload, "Reason");
+        boolean hydrated = false;
 
         if (buyer != null) {
             meta.buyer = buyer;
+            hydrated = true;
         }
         if (dealer != null) {
             meta.dealer = dealer;
+            hydrated = true;
         }
         if (car != null) {
             meta.car = car;
+            hydrated = true;
         }
         if (price != null) {
             Integer parsedPrice = parseMoneyValue(price);
             if (parsedPrice != null) {
                 meta.outcomePrice = parsedPrice.doubleValue();
+                hydrated = true;
             }
         }
         if (reason != null) {
             meta.failureReason = reason;
+            hydrated = true;
         }
-        return true;
+        return hydrated;
     }
 
     private String extractBrokerField(String payload, String key) {
@@ -815,6 +837,32 @@ public class MainUI extends Application {
         return wrapper;
     }
 
+    private void polishScrollPane(ScrollPane scroll) {
+        scroll.setFitToWidth(true);
+        scroll.setPannable(true);
+        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;"
+                + "-fx-border-color: transparent; -fx-padding: 0;");
+    }
+
+    private String textAreaStyle(boolean monospace) {
+        String font = monospace ? "'JetBrains Mono', 'Consolas', 'Courier New'" : FONT_FAMILY;
+        return "-fx-font-size: 12; -fx-font-family: " + font + "; -fx-font-weight: " + FONT_WEIGHT_MEDIUM + ";"
+                + "-fx-control-inner-background: " + SURFACE + ";"
+                + "-fx-text-fill: " + DARK_TEXT + ";"
+                + "-fx-highlight-fill: #bfdbfe;"
+                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1;"
+                + "-fx-border-radius: 10; -fx-background-radius: 10;"
+                + "-fx-padding: 8;";
+    }
+
+    private VBox createPanel(double spacing, Insets padding) {
+        VBox panel = new VBox(spacing);
+        panel.setPadding(padding);
+        panel.setStyle(PANEL_STYLE);
+        return panel;
+    }
+
     private VBox createSidebar() {
         navigationButtons.clear();
 
@@ -936,6 +984,100 @@ public class MainUI extends Application {
         logArea.appendText(timestamp + "[UI] " + message + "\n");
     }
 
+    private void unregisterTerminatedAgent(String msg) {
+        int colon = msg.indexOf(':');
+        if (colon <= 0) {
+            return;
+        }
+        String agentName = msg.substring(0, colon).trim();
+        synchronized (buyerAgents) {
+            buyerAgents.remove(agentName);
+        }
+        synchronized (dealerAgents) {
+            dealerAgents.remove(agentName);
+        }
+        waitingBuyerAgents.remove(agentName);
+        manualBuyerAgents.remove(agentName);
+        updateNegotiationControlStatus();
+    }
+
+    private void recordFailureReport(String msg) {
+        String payload = msg.contains("NO DEAL:")
+                ? msg.substring(msg.indexOf("NO DEAL:") + "NO DEAL:".length()).trim()
+                : msg;
+        String reason = extractBrokerField(payload, "Reason");
+        if (reason == null || reason.isBlank()) {
+            reason = "UNKNOWN";
+        }
+        failureReasonCounts.put(reason, failureReasonCounts.getOrDefault(reason, 0) + 1);
+        if (failureReportArea != null) {
+            failureReportArea.setText(buildFailureReport(payload, reason));
+            failureReportArea.setScrollTop(0);
+        }
+    }
+
+    private String buildFailureReport(String latestPayload, String latestReason) {
+        StringBuilder report = new StringBuilder();
+        report.append("Failure summary\n");
+        report.append("----------------\n");
+        report.append("Total failed negotiations: ").append(failedDealsCount).append("\n\n");
+        for (Map.Entry<String, Integer> entry : failureReasonCounts.entrySet()) {
+            report.append("- ").append(humanFailureReason(entry.getKey()))
+                    .append(": ").append(entry.getValue()).append("\n");
+        }
+        report.append("\nLatest failure\n");
+        report.append("--------------\n");
+        report.append("Reason: ").append(humanFailureReason(latestReason)).append("\n");
+        appendFailureField(report, latestPayload, "Buyer");
+        appendFailureField(report, latestPayload, "Dealer");
+        appendFailureField(report, latestPayload, "Car");
+        appendFailureField(report, latestPayload, "Budget");
+        String sessionId = extractSessionId(latestPayload);
+        if (sessionId != null) {
+            report.append("Session: ").append(sessionId).append("\n");
+        }
+        report.append("\nMeaning\n");
+        report.append("-------\n");
+        report.append(explainFailureReason(latestReason)).append("\n");
+        return report.toString();
+    }
+
+    private void appendFailureField(StringBuilder report, String payload, String key) {
+        String value = extractBrokerField(payload, key);
+        if (value != null && !value.isBlank()) {
+            report.append(key).append(": ").append(value).append("\n");
+        }
+    }
+
+    private String humanFailureReason(String reason) {
+        return reason == null ? "Unknown" : reason.replace('_', ' ').toLowerCase();
+    }
+
+    private String explainFailureReason(String reason) {
+        if ("BUDGET_TOO_LOW".equals(reason)) {
+            return "The buyer budget was below every matching dealer reserve price, so no session fee was charged.";
+        }
+        if ("NO_MATCHING_CAR".equals(reason)) {
+            return "The broker could not find a listed car matching the buyer request after retries.";
+        }
+        if ("MAX_ROUNDS_REACHED".equals(reason)) {
+            return "The buyer and dealer could not agree within the configured round limit.";
+        }
+        if ("DEALER_SOLD_OUT".equals(reason)) {
+            return "The dealer sold the available stock while another buyer was still negotiating.";
+        }
+        if (reason != null && reason.startsWith("DEALER_REJECTED")) {
+            return "The dealer declined to engage because the first offer terms were too weak.";
+        }
+        if ("USER_STOPPED".equals(reason)) {
+            return "The user stopped the buyer from the toolbar.";
+        }
+        if ("TIMEOUT".equals(reason)) {
+            return "The broker closed a session that stayed open past the timeout.";
+        }
+        return "The broker recorded the session as failed; check the raw failure log for the exact context.";
+    }
+
     private void sendSpaceCommand(String command) {
         try {
             cc.createNewAgent(nextAgentName("space-command"), "org.example.agents.SpaceCommandAgent",
@@ -969,16 +1111,43 @@ public class MainUI extends Application {
 
     private void launchSniffer(UILogger logger) {
         try {
-            // The broker is stable and every negotiation message is routed through it.
-            // Avoid sniffing short-lived demo buyer/dealer agents, because JADE AMS may
-            // warn when the Sniffer tries to detach from agents that already terminated.
-            String target = "broker;space";
+            String target = buildSnifferTargets();
+            if (!hasRegisteredNegotiationAgents()) {
+                showAlert("Create demo or custom buyer/dealer agents before opening Sniffer. "
+                        + "Sniffer only preloads agents that already exist.", Alert.AlertType.INFORMATION);
+                logger.log("STATUS: Sniffer not launched: create buyers/dealers first, then open Sniffer before Start.");
+                return;
+            }
             cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
                     new Object[] { target }).start();
-            logger.log("STATUS: JADE Sniffer launched for broker and space. Broker-routed messages remain visible.");
+            logger.log("STATUS: JADE Sniffer launched for: " + target);
         } catch (Exception e) {
             logger.log("STATUS: Sniffer not launched: " + e.getMessage());
         }
+    }
+
+    private boolean hasRegisteredNegotiationAgents() {
+        synchronized (dealerAgents) {
+            if (!dealerAgents.isEmpty()) {
+                return true;
+            }
+        }
+        synchronized (buyerAgents) {
+            return !buyerAgents.isEmpty();
+        }
+    }
+
+    private String buildSnifferTargets() {
+        LinkedHashSet<String> targets = new LinkedHashSet<>();
+        targets.add("broker");
+        targets.add("space");
+        synchronized (dealerAgents) {
+            targets.addAll(dealerAgents);
+        }
+        synchronized (buyerAgents) {
+            targets.addAll(buyerAgents);
+        }
+        return String.join(";", targets);
     }
 
     private String nextAgentName(String prefix) {
@@ -987,7 +1156,9 @@ public class MainUI extends Application {
 
     private VBox createParticipantsView(UILogger logger) {
         VBox page = createPage("Participants", "Create dealers first, then add buyers into the broker-routed market.");
-        HBox columns = new HBox(18);
+        HBox columns = new HBox(22);
+        columns.setPadding(new Insets(2, 2, 18, 2));
+        columns.setAlignment(javafx.geometry.Pos.TOP_LEFT);
 
         VBox dealer = createDealerView(logger);
         VBox buyer = createBuyerView(logger);
@@ -999,10 +1170,13 @@ public class MainUI extends Application {
         columns.getChildren().addAll(dealer, buyer);
         HBox.setHgrow(dealer, Priority.ALWAYS);
         HBox.setHgrow(buyer, Priority.ALWAYS);
+        dealer.setMinWidth(440);
+        buyer.setMinWidth(440);
+        dealer.setMaxWidth(Double.MAX_VALUE);
+        buyer.setMaxWidth(Double.MAX_VALUE);
 
         ScrollPane scroll = new ScrollPane(columns);
-        scroll.setFitToWidth(true);
-        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+        polishScrollPane(scroll);
         page.getChildren().add(scroll);
         VBox.setVgrow(scroll, Priority.ALWAYS);
         return page;
@@ -1011,6 +1185,7 @@ public class MainUI extends Application {
     private VBox createLogsView() {
         VBox page = createPage("Logs", "Monitor broker activity and failed negotiations in one place.");
         HBox columns = new HBox(18);
+        columns.setMinHeight(0);
 
         VBox activity = createActivityLogView();
         VBox failures = createFailuresView();
@@ -1019,31 +1194,36 @@ public class MainUI extends Application {
         activity.setStyle("-fx-background-color: transparent;");
         failures.setStyle("-fx-background-color: transparent;");
         activity.setMinWidth(520);
-        failures.setMinWidth(360);
+        failures.setMinWidth(460);
+        failures.setPrefWidth(520);
 
         columns.getChildren().addAll(activity, failures);
         HBox.setHgrow(activity, Priority.ALWAYS);
         HBox.setHgrow(failures, Priority.ALWAYS);
+        VBox.setVgrow(activity, Priority.ALWAYS);
+        VBox.setVgrow(failures, Priority.ALWAYS);
         page.getChildren().add(columns);
         VBox.setVgrow(columns, Priority.ALWAYS);
         return page;
     }
 
     private VBox createPage(String title, String subtitle) {
-        VBox page = new VBox(16);
-        page.setPadding(new Insets(22));
+        VBox page = new VBox(18);
+        page.setPadding(new Insets(24));
         page.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
         Label titleLabel = new Label(title);
-        titleLabel.setStyle("-fx-font-size: 24; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        titleLabel.setStyle("-fx-font-size: 25; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
         Label subtitleLabel = new Label(subtitle);
         subtitleLabel.setStyle("-fx-font-size: 12; -fx-font-weight: 500; -fx-text-fill: " + TEXT_MUTED + ";");
-        page.getChildren().add(new VBox(2, titleLabel, subtitleLabel));
+        VBox header = new VBox(3, titleLabel, subtitleLabel);
+        header.setPadding(new Insets(0, 0, 2, 0));
+        page.getChildren().add(header);
         return page;
     }
 
     private VBox createBrokerView() {
-        VBox box = new VBox(16);
-        box.setPadding(new Insets(20));
+        VBox box = new VBox(18);
+        box.setPadding(new Insets(24));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         // ── Header ────────────────────────────────────────────────────────────
@@ -1060,26 +1240,25 @@ public class MainUI extends Application {
                 createStatCard("🔁 Active Sessions", activeSessionsLabel, "#8b5cf6"));
         HBox statsRow2 = new HBox(12,
                 createStatCard("✅ Deals Closed", transactionCountLabel, SUCCESS_GREEN),
-                createStatCard("💰 Total Revenue", revenueLabel, "#ec4899"),
-                createStatCard("💵 Fixed Fees", fixedFeesLabel, "#06b6d4"));
-        for (HBox row : new HBox[] { statsRow1, statsRow2 }) {
+                createStatCard("❌ Failed Deals", failedDealsCountLabel, ERROR_RED),
+                createStatCard("💰 Total Revenue", revenueLabel, "#ec4899"));
+        HBox statsRow3 = new HBox(12,
+                createStatCard("💵 Fixed Fees", fixedFeesLabel, "#06b6d4"),
+                createStatCard("Commission (5% deals)", commissionLabel, SUCCESS_GREEN));
+        for (HBox row : new HBox[] { statsRow1, statsRow2, statsRow3 }) {
             for (javafx.scene.Node n : row.getChildren())
                 HBox.setHgrow(n, Priority.ALWAYS);
         }
-        VBox statsSection = new VBox(10, statsRow1, statsRow2);
+        VBox statsSection = new VBox(10, statsRow1, statsRow2, statsRow3);
 
         dashboardEventsArea = new TextArea();
         dashboardEventsArea.setEditable(false);
         dashboardEventsArea.setWrapText(true);
         dashboardEventsArea.setPrefRowCount(9);
-        dashboardEventsArea.setStyle("-fx-font-size: 11; -fx-font-family: " + FONT_FAMILY + ";"
-                + "-fx-control-inner-background: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-border-radius: 10; -fx-background-radius: 10;");
+        dashboardEventsArea.setStyle(textAreaStyle(true));
 
-        VBox brokerFeed = new VBox(8, createSectionLabel("Broker event feed"), dashboardEventsArea);
-        brokerFeed.setPadding(new Insets(14));
-        brokerFeed.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        VBox brokerFeed = createPanel(10, new Insets(16));
+        brokerFeed.getChildren().addAll(createSectionLabel("Broker event feed"), dashboardEventsArea);
 
         VBox checklist = new VBox(8,
                 createSectionLabel("Demo checklist"),
@@ -1087,25 +1266,25 @@ public class MainUI extends Application {
                 createChecklistItem("2. Add waiting buyers"),
                 createChecklistItem("3. Press Start and watch broker-routed offers"),
                 createChecklistItem("4. Use Session Detail to explain a deal"));
-        checklist.setPadding(new Insets(14));
-        checklist.setStyle("-fx-background-color: #ecfeff; -fx-background-radius: 12;"
-                + "-fx-border-color: #67e8f9; -fx-border-width: 1;");
+        checklist.setPadding(new Insets(16));
+        checklist.setStyle("-fx-background-color: #ecfeff; -fx-background-radius: 14;"
+                + "-fx-border-color: #67e8f9; -fx-border-radius: 14; -fx-border-width: 1;");
 
         // ── Chart ─────────────────────────────────────────────────────────────
         VBox chartSection = createNegotiationVisualiser();
 
 
-        // ── Left column: stats ───────────────────────────────
-        VBox leftCol = new VBox(14, statsSection, brokerFeed, checklist);
-        leftCol.setMinWidth(420);
-        leftCol.setMaxWidth(520);
+        VBox sideCol = new VBox(14, brokerFeed, checklist);
+        sideCol.setMinWidth(300);
+        sideCol.setPrefWidth(340);
+        sideCol.setMaxWidth(380);
 
-        // ── Two-column body row ───────────────────────────────────────────────
-        HBox bodyRow = new HBox(16, leftCol, chartSection);
+        HBox bodyRow = new HBox(16, chartSection, sideCol);
         HBox.setHgrow(chartSection, Priority.ALWAYS);
+        VBox.setVgrow(chartSection, Priority.ALWAYS);
         VBox.setVgrow(bodyRow, Priority.ALWAYS);
 
-        box.getChildren().addAll(hdr, bodyRow);
+        box.getChildren().addAll(hdr, statsSection, bodyRow);
         VBox.setVgrow(box, Priority.ALWAYS);
         return box;
     }
@@ -1139,13 +1318,12 @@ public class MainUI extends Application {
         visualiserContentPane = new StackPane(marketVisualiserScroll, sessionVisualiserScroll, agentVisualiserScroll);
         visualiserContentPane.setAlignment(javafx.geometry.Pos.TOP_LEFT);
         visualiserContentPane.setMinHeight(360);
-        visualiserContentPane.setPrefHeight(620);
+        visualiserContentPane.setPrefHeight(660);
         VBox.setVgrow(visualiserContentPane, Priority.ALWAYS);
 
         VBox section = new VBox(12, header, visualiserContentPane);
-        section.setPadding(new Insets(14));
-        section.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        section.setPadding(new Insets(16));
+        section.setStyle(PANEL_STYLE);
         VBox.setVgrow(section, Priority.ALWAYS);
 
         showVisualiserView(VisualiserView.MARKET);
@@ -1157,12 +1335,9 @@ public class MainUI extends Application {
         content.setFillWidth(true);
         content.setMinWidth(0);
         ScrollPane scroll = new ScrollPane(content);
-        scroll.setFitToWidth(true);
-        scroll.setPannable(true);
         scroll.setMinHeight(340);
-        scroll.setPrefHeight(620);
-        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;"
-                + "-fx-border-color: transparent; -fx-padding: 0;");
+        scroll.setPrefHeight(660);
+        polishScrollPane(scroll);
         VBox.setVgrow(scroll, Priority.ALWAYS);
         return scroll;
     }
@@ -1251,7 +1426,7 @@ public class MainUI extends Application {
             HBox.setHgrow(node, Priority.ALWAYS);
         }
 
-        HBox charts = new HBox(14,
+        VBox charts = new VBox(14,
                 createChartCard("Price distribution per car model", createPriceDistributionChart(sessions),
                         createChartLegend(
                                 createLegendSwatch("List price", "#f45a2a"),
@@ -1261,8 +1436,9 @@ public class MainUI extends Application {
                         createChartLegend(
                                 createLegendSwatch("Buyer movement", ACCENT_BLUE),
                                 createLegendSwatch("Dealer movement", WARNING_ORANGE))));
-        HBox.setHgrow(charts.getChildren().get(0), Priority.ALWAYS);
-        HBox.setHgrow(charts.getChildren().get(1), Priority.ALWAYS);
+        for (Node chartCard : charts.getChildren()) {
+            VBox.setVgrow(chartCard, Priority.NEVER);
+        }
 
         marketVisualiserPane.getChildren().addAll(metrics, charts,
                 createTableCard("Live listing board", createListingBoard(listings)));
@@ -1387,9 +1563,8 @@ public class MainUI extends Application {
     private VBox createVisualMetric(String title, String value, String sub) {
         VBox card = new VBox(3);
         card.setMinWidth(120);
-        card.setPadding(new Insets(10, 12, 10, 12));
-        card.setStyle("-fx-background-color: " + SURFACE_ALT + "; -fx-background-radius: 8;"
-                + "-fx-border-color: #e2e8f0; -fx-border-radius: 8;");
+        card.setPadding(new Insets(12, 14, 12, 14));
+        card.setStyle(SOFT_PANEL_STYLE);
         Label titleLabel = new Label(title);
         titleLabel.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 700;");
         Label valueLabel = new Label(value);
@@ -1410,7 +1585,7 @@ public class MainUI extends Application {
         if (legend != null) {
             card.getChildren().add(legend);
         }
-        card.setPadding(new Insets(12));
+        card.setPadding(new Insets(14));
         double chartHeight = chart instanceof Region ? ((Region) chart).getPrefHeight() : Region.USE_COMPUTED_SIZE;
         if (chartHeight == Region.USE_COMPUTED_SIZE || chartHeight < 1) {
             chartHeight = chart instanceof Chart ? 300 : 220;
@@ -1418,8 +1593,7 @@ public class MainUI extends Application {
         double cardHeight = chart instanceof Chart ? chartHeight + (legend != null ? 76 : 48) : Region.USE_COMPUTED_SIZE;
         card.setMinHeight(chart instanceof Chart ? cardHeight : 260);
         card.setPrefHeight(chart instanceof Chart ? cardHeight : Region.USE_COMPUTED_SIZE);
-        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 10;"
-                + "-fx-border-color: #e2e8f0; -fx-border-radius: 10;");
+        card.setStyle(SOFT_PANEL_STYLE);
         if (chart instanceof Chart) {
             chart.setManaged(true);
             chart.setVisible(true);
@@ -1439,17 +1613,17 @@ public class MainUI extends Application {
 
     private VBox createTableCard(String title, Node content) {
         VBox card = new VBox(8, createSectionLabel(title), content);
-        card.setPadding(new Insets(12));
-        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 10;"
-                + "-fx-border-color: #e2e8f0; -fx-border-radius: 10;");
+        card.setPadding(new Insets(14));
+        card.setStyle(SOFT_PANEL_STYLE);
         return card;
     }
 
     private void configureChart(Chart chart, Axis<?> xAxis, Axis<?> yAxis, double height) {
         chart.setAnimated(false);
-        chart.setMinWidth(420);
+        chart.setMinWidth(0);
         chart.setMinHeight(height);
         chart.setPrefHeight(height);
+        chart.setMaxWidth(Double.MAX_VALUE);
         chart.setPadding(new Insets(8, 12, 8, 8));
         chart.setLegendSide(Side.BOTTOM);
         chart.setStyle("-fx-font-family: " + FONT_FAMILY + ";"
@@ -2005,19 +2179,49 @@ public class MainUI extends Application {
             vm.failureReason = meta != null ? meta.failureReason : null;
             vm.points.addAll(sessionPoints.getOrDefault(id, Collections.emptyList()));
             vm.points.sort(Comparator.comparingInt(p -> p.cycle));
+            applyListingData(vm);
             vm.rounds = vm.points.size();
             for (TrajectoryPoint point : vm.points) {
                 if (vm.car == null) vm.car = point.car;
-                if (vm.listPrice == null || point.price > vm.listPrice) vm.listPrice = (int) Math.round(point.price);
                 vm.latestPrice = point.price;
                 if (isOutcomeEvent(point.event)) vm.outcome = point.event == TrajectoryEvent.ACCEPT ? "ACCEPTED" : "NO DEAL";
             }
+            applyListingData(vm);
             if (meta != null && meta.outcomePrice != null) vm.latestPrice = meta.outcomePrice;
-            if (vm.listPrice == null && vm.latestPrice != null) vm.listPrice = (int) Math.round(vm.latestPrice);
+            if (vm.listPrice == null) {
+                vm.listPrice = maxPointPrice(vm.points);
+            }
             if (vm.listPrice != null && vm.latestPrice != null) vm.totalConcession = Math.max(0, vm.listPrice - vm.latestPrice);
             models.add(vm);
         }
         return models;
+    }
+
+    private void applyListingData(SessionViewModel vm) {
+        if (vm == null || vm.dealer == null || vm.car == null) {
+            return;
+        }
+        ListingViewModel listing = listingModelMap.get(listingKey(vm.dealer, vm.car));
+        if (listing == null) {
+            return;
+        }
+        if (vm.listPrice == null) {
+            vm.listPrice = listing.listPrice;
+        }
+        if (vm.dealerReserve == null) {
+            vm.dealerReserve = listing.reserve;
+        }
+    }
+
+    private Integer maxPointPrice(List<TrajectoryPoint> points) {
+        if (points == null || points.isEmpty()) {
+            return null;
+        }
+        double max = 0;
+        for (TrajectoryPoint point : points) {
+            max = Math.max(max, point.price);
+        }
+        return max > 0 ? (int) Math.round(max) : null;
     }
 
     private List<AgentViewModel> buildAgentViewModels() {
@@ -2294,10 +2498,12 @@ public class MainUI extends Application {
 
     private VBox createStatCard(String title, Label valueLabel, String color) {
         VBox card = new VBox(4);
-        card.setPadding(new Insets(16, 18, 16, 18));
-        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
-                + "-fx-border-color: " + color + "; -fx-border-width: 0 0 3 0;"
-                + "-fx-border-radius: 12; -fx-effect: " + SOFT_SHADOW + ";");
+        card.setMinHeight(96);
+        card.setPadding(new Insets(16, 18, 14, 18));
+        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 14;"
+                + "-fx-border-color: #dbeafe #dbeafe " + color + " #dbeafe;"
+                + "-fx-border-width: 1 1 4 1;"
+                + "-fx-border-radius: 14; -fx-effect: " + CARD_SHADOW + ";");
 
         Label titleLabel = new Label(title);
         titleLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + TEXT_MUTED + "; -fx-font-weight: 600;");
@@ -2322,10 +2528,10 @@ public class MainUI extends Application {
 
     private VBox createBuyerView(UILogger logger) {
         VBox box = new VBox(18);
-        box.setPadding(new Insets(22));
+        box.setPadding(new Insets(4));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
-        Label headerLabel = new Label("🧑 Buyer Portal");
+        Label headerLabel = new Label("Buyer Portal");
         headerLabel.setStyle("-fx-font-size: 22; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
         Label subLabel = new Label(
                 "Register a buyer agent with a desired car and maximum budget. The broker will find matching dealers.");
@@ -2337,27 +2543,31 @@ public class MainUI extends Application {
         prereqBanner.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         prereqBanner.setStyle("-fx-background-color: #fff7ed; -fx-background-radius: 10;"
                 + "-fx-border-color: #fdba74; -fx-border-radius: 10; -fx-border-width: 1;");
-        Label prereqIcon = new Label("⚠️");
-        Label prereqText = new Label("Prerequisite: Register at least one Dealer first (Dealer Portal → List Car).");
+        Label prereqIcon = new Label("!");
+        prereqIcon.setStyle("-fx-font-size: 11; -fx-font-weight: 800; -fx-text-fill: #c2410c;");
+        Label prereqText = new Label("Register at least one dealer first so the broker can return matching listings.");
         prereqText.setStyle("-fx-font-size: 12; -fx-text-fill: #92400e; -fx-font-weight: 600;");
         prereqBanner.getChildren().addAll(prereqIcon, prereqText);
 
         // Form card
-        VBox card = new VBox(16);
-        card.setPadding(new Insets(22));
-        card.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 12;"
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        VBox card = createPanel(16, new Insets(22));
 
         Label formTitle = new Label("Add Buyer Agent");
         formTitle.setStyle("-fx-font-size: 16; -fx-font-weight: 700; -fx-text-fill: " + DARK_TEXT + ";");
 
         GridPane form = new GridPane();
-        form.setHgap(18);
-        form.setVgap(14);
+        configurePortalForm(form);
 
         TextField buyerName = createStyledTextField("e.g., Ali Hassan");
         ComboBox<String> carModel = createStyledCarComboBox();
         TextField budget = createStyledTextField("e.g., 120000");
+
+        GridPane.setHgrow(buyerName, Priority.ALWAYS);
+        GridPane.setHgrow(carModel, Priority.ALWAYS);
+        GridPane.setHgrow(budget, Priority.ALWAYS);
+        buyerName.setMaxWidth(Double.MAX_VALUE);
+        carModel.setMaxWidth(Double.MAX_VALUE);
+        budget.setMaxWidth(Double.MAX_VALUE);
 
         form.add(makeFieldLabel("Buyer Name", "Unique agent identifier"), 0, 0);
         form.add(buyerName, 1, 0);
@@ -2365,15 +2575,13 @@ public class MainUI extends Application {
         form.add(carModel, 1, 1);
         form.add(makeFieldLabel("Max Budget (RM)", "Upper limit — buyer opens at ~70%"), 0, 2);
         form.add(budget, 1, 2);
-        GridPane.setHgrow(buyerName, Priority.ALWAYS);
-        GridPane.setHgrow(carModel, Priority.ALWAYS);
-        GridPane.setHgrow(budget, Priority.ALWAYS);
 
         CheckBox manualControlCheck = new CheckBox("Manual Negotiation Mode (Wait for my input)");
         manualControlCheck.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + ";");
+        form.add(manualControlCheck, 1, 3);
 
-        Button addBuyerBtn = createStyledButton("🧑 Add Buyer Agent", ACCENT_BLUE);
-        addBuyerBtn.setPrefWidth(240);
+        Button addBuyerBtn = createStyledButton("Add Buyer Agent", ACCENT_BLUE);
+        addBuyerBtn.setMaxWidth(Double.MAX_VALUE);
         addBuyerBtn.setOnAction(e -> {
             String name = buyerName.getText().trim();
             String car = carModel.getValue() != null ? carModel.getValue() : "";
@@ -2406,7 +2614,6 @@ public class MainUI extends Application {
                 updateNegotiationControlStatus();
                 refreshNegotiationVisualiser();
                 logger.log("Buyer '" + name + "' added — " + car + " @ RM" + budgetStr);
-                launchSniffer(logger);
                 buyerName.clear();
                 carModel.setValue(null);
                 budget.clear();
@@ -2419,7 +2626,9 @@ public class MainUI extends Application {
             }
         });
 
-        card.getChildren().addAll(formTitle, manualControlCheck, form, addBuyerBtn);
+        form.add(addBuyerBtn, 1, 4);
+
+        card.getChildren().addAll(formTitle, form);
         box.getChildren().addAll(headerLabel, subLabel, prereqBanner, card);
         VBox.setVgrow(card, Priority.SOMETIMES);
         return box;
@@ -2431,6 +2640,20 @@ public class MainUI extends Application {
         Label subLbl = new Label(subtitle);
         subLbl.setStyle("-fx-font-size: 11; -fx-text-fill: " + TEXT_MUTED + ";");
         return new VBox(2, titleLbl, subLbl);
+    }
+
+    private void configurePortalForm(GridPane form) {
+        form.setHgap(24);
+        form.setVgap(16);
+        form.setMaxWidth(Double.MAX_VALUE);
+        ColumnConstraints labels = new ColumnConstraints();
+        labels.setMinWidth(150);
+        labels.setPrefWidth(172);
+        labels.setMaxWidth(190);
+        ColumnConstraints fields = new ColumnConstraints();
+        fields.setHgrow(Priority.ALWAYS);
+        fields.setFillWidth(true);
+        form.getColumnConstraints().setAll(labels, fields);
     }
 
     /** Horizontal toolbar replacing the old collapsible sidebar. */
@@ -2589,16 +2812,8 @@ public class MainUI extends Application {
                 createDemoBuyer(buyer[0], buyer[1], buyer[2], config);
             }
 
-            dealerCount += dealers.length;
-            dealerCountLabel.setText(String.valueOf(dealerCount));
-            updateDealerStatus();
-            buyerCount += buyers.length;
-            buyerCountLabel.setText(String.valueOf(buyerCount));
-            updateBuyerStatus();
             updateNegotiationControlStatus();
             refreshNegotiationVisualiser();
-
-            launchSniffer(appLogger);
 
             loggerLog("Demo scenario " + demoId + " added: " + dealers.length + " dealers and " + buyers.length
                     + " waiting buyers. Press Start to stress test negotiation and strategy switching.");
@@ -2643,59 +2858,56 @@ public class MainUI extends Application {
     }
 
     private VBox createDealerView(UILogger logger) {
-        VBox box = new VBox(25);
-        box.setPadding(new Insets(25));
+        VBox box = new VBox(18);
+        box.setPadding(new Insets(4));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label headerLabel = new Label("Dealer Portal");
-        headerLabel.setStyle("-fx-font-size: 26; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
-        // Info banner
+        headerLabel.setStyle("-fx-font-size: 22; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        Label subLabel = new Label(
+                "List vehicle inventory with price and stock before buyers start negotiating.");
+        subLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " + TEXT_MUTED + "; -fx-wrap-text: true;");
+
         VBox infoBanner = new VBox();
-        infoBanner.setPadding(new Insets(15));
+        infoBanner.setPadding(new Insets(12, 16, 12, 16));
         infoBanner.setStyle(
                 "-fx-background-color: #eff6ff; -fx-background-radius: 12; -fx-border-color: #93c5fd; -fx-border-radius: 12; -fx-border-width: 1;");
-        Label infoText = new Label("Register car inventory here first. Buyers will negotiate with available dealers.");
-        infoText.setStyle("-fx-font-size: 13; -fx-text-fill: #0c4a6e; -fx-font-weight: bold; -fx-wrap-text: true;");
+        Label infoText = new Label("Dealer listings are registered with the broker and shown to matching buyers.");
+        infoText.setStyle("-fx-font-size: 12; -fx-text-fill: #0c4a6e; -fx-font-weight: 600; -fx-wrap-text: true;");
         infoBanner.getChildren().add(infoText);
-        VBox formSection = new VBox(18);
-        formSection.setPadding(new Insets(25));
-        formSection.setStyle("-fx-background-color: " + SURFACE
-                + "; -fx-background-radius: 12; -fx-border-radius: 12; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        VBox formSection = createPanel(18, new Insets(22));
 
         Label formTitle = new Label("Register and List New Car");
-        formTitle.setStyle("-fx-font-size: 18; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        formTitle.setStyle("-fx-font-size: 16; -fx-font-weight: 700; -fx-text-fill: " + DARK_TEXT + ";");
 
         GridPane form = new GridPane();
-        form.setHgap(15);
-        form.setVgap(15);
-        form.setPadding(new Insets(15, 0, 15, 0));
+        configurePortalForm(form);
 
         TextField dealerName = createStyledTextField("e.g., GreenCars Sdn Bhd");
         ComboBox<String> carModel = createStyledCarComboBox();
         TextField retailPrice = createStyledTextField("e.g., 150000");
         TextField stockField = createStyledTextField("e.g., 3");
 
-        Label dealerLabel = new Label("Dealer Name:");
-        dealerLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + ";");
-        Label carLbl = new Label("Car Model:");
-        carLbl.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + ";");
-        Label priceLabel = new Label("Retail Price (RM):");
-        priceLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + ";");
-        Label stockLabel = new Label("Stock Quantity:");
-        stockLabel.setStyle("-fx-font-size: 13; -fx-text-fill: " + DARK_TEXT + ";");
+        GridPane.setHgrow(dealerName, Priority.ALWAYS);
+        GridPane.setHgrow(carModel, Priority.ALWAYS);
+        GridPane.setHgrow(retailPrice, Priority.ALWAYS);
+        GridPane.setHgrow(stockField, Priority.ALWAYS);
+        dealerName.setMaxWidth(Double.MAX_VALUE);
+        carModel.setMaxWidth(Double.MAX_VALUE);
+        retailPrice.setMaxWidth(Double.MAX_VALUE);
+        stockField.setMaxWidth(Double.MAX_VALUE);
 
-        form.add(dealerLabel, 0, 0);
+        form.add(makeFieldLabel("Dealer Name", "Unique seller agent name"), 0, 0);
         form.add(dealerName, 1, 0);
-        form.add(carLbl, 0, 1);
+        form.add(makeFieldLabel("Car Model", "Vehicle listed with broker"), 0, 1);
         form.add(carModel, 1, 1);
-        form.add(priceLabel, 0, 2);
+        form.add(makeFieldLabel("Retail Price (RM)", "Dealer starting ask"), 0, 2);
         form.add(retailPrice, 1, 2);
-        form.add(stockLabel, 0, 3);
+        form.add(makeFieldLabel("Stock Quantity", "Available units"), 0, 3);
         form.add(stockField, 1, 3);
 
         Button addDealerBtn = createStyledButton("List Car", WARNING_ORANGE);
-        addDealerBtn.setPrefWidth(280);
+        addDealerBtn.setMaxWidth(Double.MAX_VALUE);
 
         addDealerBtn.setOnAction(e -> {
             String name = dealerName.getText().trim();
@@ -2727,11 +2939,6 @@ public class MainUI extends Application {
                 logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
                 dealerAgents.add(name);
                 recordDealerListing(name, car, (int) priceAmount, stockAmount, config);
-                // Try to refresh sniffer to include the newly added dealer
-                launchSniffer(logger);
-                dealerCount++;
-                dealerCountLabel.setText(String.valueOf(dealerCount));
-                updateDealerStatus();
                 dealerName.clear();
                 carModel.setValue(null);
                 retailPrice.clear();
@@ -2746,30 +2953,28 @@ public class MainUI extends Application {
             }
         });
 
-        HBox btnBox = new HBox(addDealerBtn);
-        btnBox.setPadding(new Insets(10, 0, 0, 0));
+        form.add(addDealerBtn, 1, 4);
 
-        formSection.getChildren().addAll(formTitle, form, btnBox);
+        formSection.getChildren().addAll(formTitle, form);
 
-        box.getChildren().addAll(headerLabel, infoBanner, formSection);
+        box.getChildren().addAll(headerLabel, subLabel, infoBanner, formSection);
         VBox.setVgrow(formSection, Priority.SOMETIMES);
 
         return box;
     }
 
     private VBox createMarketAnalysisView() {
-        VBox box = new VBox(25);
-        box.setPadding(new Insets(25));
+        VBox box = new VBox(18);
+        box.setPadding(new Insets(24));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label headerLabel = new Label("Market Analytics");
-        headerLabel.setStyle("-fx-font-size: 26; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        headerLabel.setStyle("-fx-font-size: 25; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         TextArea analysisArea = new TextArea();
         analysisArea.setEditable(false);
         analysisArea.setWrapText(true);
-        analysisArea.setStyle("-fx-font-size: 14; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: "
-                + FONT_WEIGHT_MEDIUM + "; -fx-control-inner-background: " + SURFACE + ";");
+        analysisArea.setStyle(textAreaStyle(true));
         analysisArea.setText(
                 "MARKET ANALYTICS DASHBOARD\n"
                         + "═══════════════════════════════════════════════\n\n"
@@ -2812,9 +3017,7 @@ public class MainUI extends Application {
          * VBox.setVgrow(scrollPane, Priority.ALWAYS);
          */
 
-        analysisArea.setStyle("-fx-font-size: 14; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: "
-                + FONT_WEIGHT_MEDIUM + "; -fx-control-inner-background: " + SURFACE + "; -fx-border-color: "
-                + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-border-radius: 8; -fx-background-radius: 8;");
+        analysisArea.setStyle(textAreaStyle(true));
         box.getChildren().addAll(headerLabel, createSimulationControlPanel(), analysisArea);
         VBox.setVgrow(analysisArea, Priority.ALWAYS);
         // --------------------------------------------------
@@ -2825,9 +3028,7 @@ public class MainUI extends Application {
     private VBox createSimulationControlPanel() {
         VBox panel = new VBox(15);
         panel.setPadding(new Insets(20));
-        panel.setStyle("-fx-background-color: " + SURFACE
-                + "; -fx-background-radius: 12; -fx-border-radius: 12; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        panel.setStyle(PANEL_STYLE);
 
         Label title = new Label("Negotiation Settings");
         title.setStyle("-fx-font-size: 17; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
@@ -2837,11 +3038,13 @@ public class MainUI extends Application {
         strategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
         strategyChoice.setValue(defaults.getStrategy().name());
         strategyChoice.setPrefWidth(180);
+        strategyChoice.setStyle(comboBoxStyle());
 
         switchStrategyChoice = new ComboBox<>();
         switchStrategyChoice.getItems().addAll("BOULWARE", "CONCEDER", "LINEAR");
         switchStrategyChoice.setValue(defaults.getSwitchStrategy().name());
         switchStrategyChoice.setPrefWidth(180);
+        switchStrategyChoice.setStyle(comboBoxStyle());
 
         deadlineCyclesField = createStyledTextField(String.valueOf(defaults.getDeadlineCycles()));
         deadlineCyclesField.setText(String.valueOf(defaults.getDeadlineCycles()));
@@ -2937,18 +3140,18 @@ public class MainUI extends Application {
     }
 
     private VBox createActivityLogView() {
-        VBox box = new VBox(25);
-        box.setPadding(new Insets(25));
+        VBox box = new VBox(16);
+        box.setPadding(new Insets(4));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label headerLabel = new Label("System Activity Log");
-        headerLabel.setStyle("-fx-font-size: 26; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        headerLabel.setStyle("-fx-font-size: 22; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         TextArea fullLogArea = new TextArea();
         fullLogArea.setEditable(false);
         fullLogArea.setWrapText(true);
-        fullLogArea.setStyle("-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: "
-                + FONT_WEIGHT_MEDIUM + "; -fx-control-inner-background: " + SURFACE + ";");
+        fullLogArea.setStyle(textAreaStyle(true));
+        fullLogArea.setPrefRowCount(30);
 
         logArea.textProperty().addListener((obs, oldVal, newVal) -> {
             fullLogArea.setText(newVal);
@@ -2957,16 +3160,12 @@ public class MainUI extends Application {
 
         // Remove the redundant ScrollPane (TextArea is already scrollable)
         // and allow the TextArea to expand to fill available height.
-        fullLogArea.setStyle("-fx-font-size: 13; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: "
-                + FONT_WEIGHT_MEDIUM + "; -fx-control-inner-background: " + SURFACE + "; -fx-border-color: "
-                + BORDER_SUBTLE + "; -fx-border-width: 1; -fx-border-radius: 8; -fx-background-radius: 8;");
+        fullLogArea.setStyle(textAreaStyle(true));
         // ----------------------------------------------------
 
         HBox controlBox = new HBox(12);
         controlBox.setPadding(new Insets(15));
-        controlBox.setStyle("-fx-background-color: " + SURFACE
-                + "; -fx-background-radius: 12; -fx-border-radius: 12; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-effect: " + SOFT_SHADOW + ";");
+        controlBox.setStyle(SOFT_PANEL_STYLE);
 
         Button copyBtn = createStyledButton("Copy Log", ACCENT_BLUE);
         copyBtn.setPrefWidth(120);
@@ -2995,23 +3194,28 @@ public class MainUI extends Application {
     }
 
     private VBox createFailuresView() {
-        VBox box = new VBox(18);
-        box.setPadding(new Insets(25));
+        VBox box = new VBox(16);
+        box.setPadding(new Insets(4));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label headerLabel = new Label("Failed Negotiations");
-        headerLabel.setStyle("-fx-font-size: 24; -fx-font-weight: bold; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        headerLabel.setStyle("-fx-font-size: 22; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
+
+        failureReportArea.setEditable(false);
+        failureReportArea.setWrapText(true);
+        failureReportArea.setText("Failure summary\n----------------\nNo failed negotiations yet.");
+        failureReportArea.setStyle(textAreaStyle(true));
+        failureReportArea.setPrefRowCount(11);
+        failureReportArea.setMinHeight(180);
 
         failuresArea.setEditable(false);
         failuresArea.setWrapText(true);
-        failuresArea.setStyle(
-                "-fx-font-size: 12; -fx-font-family: 'Courier New'; -fx-control-inner-background: white; -fx-border-color: #e5e7eb; -fx-border-width: 1; -fx-border-radius: 4;");
-        failuresArea.setPrefRowCount(15);
+        failuresArea.setStyle(textAreaStyle(true));
+        failuresArea.setPrefRowCount(18);
 
         HBox controlBox = new HBox(12);
         controlBox.setPadding(new Insets(10));
-        controlBox.setStyle(
-                "-fx-background-color: white; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-color: #dbe4ef; -fx-border-width: 1;");
+        controlBox.setStyle(SOFT_PANEL_STYLE);
 
         Button copyBtn = createStyledButton("Copy Failures", ACCENT_BLUE);
         copyBtn.setOnAction(e -> {
@@ -3025,12 +3229,15 @@ public class MainUI extends Application {
         Button clearBtn = createStyledButton("Clear Failures", ERROR_RED);
         clearBtn.setOnAction(e -> {
             failuresArea.clear();
+            failureReportArea.setText("Failure summary\n----------------\nNo failed negotiations yet.");
             failedDeals.clear();
+            failureReasonCounts.clear();
         });
 
         controlBox.getChildren().addAll(copyBtn, clearBtn);
 
-        box.getChildren().addAll(headerLabel, failuresArea, controlBox);
+        box.getChildren().addAll(headerLabel, failureReportArea, createSectionLabel("Raw failure log"),
+                failuresArea, controlBox);
         VBox.setVgrow(failuresArea, Priority.ALWAYS);
         return box;
     }
@@ -3038,17 +3245,17 @@ public class MainUI extends Application {
     /** Sessions tab — live log of session start, settle, and fail events */
     private VBox createSessionsView() {
         VBox box = new VBox(18);
-        box.setPadding(new Insets(25));
+        box.setPadding(new Insets(24));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label header = new Label("Negotiation Sessions");
-        header.setStyle("-fx-font-size: 26; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        header.setStyle("-fx-font-size: 25; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         // Mini stat row
         HBox miniStats = new HBox(16);
         VBox activeCard = createStatCard("Active", activeSessionsLabelMini, "#8b5cf6");
         VBox feesCard = createStatCard("💵 Fixed Fees", fixedFeesLabelMini, "#06b6d4");
-        VBox commCard = createStatCard("Commission", commissionLabel, SUCCESS_GREEN);
+        VBox commCard = createStatCard("Commission (5% deals)", commissionLabelMini, SUCCESS_GREEN);
         for (VBox c : new VBox[] { activeCard, feesCard, commCard }) {
             c.setPrefWidth(180);
             miniStats.getChildren().add(c);
@@ -3063,15 +3270,11 @@ public class MainUI extends Application {
         // Session event log
         sessionsArea.setEditable(false);
         sessionsArea.setWrapText(true);
-        sessionsArea.setStyle("-fx-font-size: 12; -fx-font-family: 'Courier New'; "
-                + "-fx-control-inner-background: " + SURFACE + "; "
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1; "
-                + "-fx-border-radius: 8; -fx-background-radius: 8;");
+        sessionsArea.setStyle(textAreaStyle(true));
 
         HBox ctrlBox = new HBox(12);
         ctrlBox.setPadding(new Insets(12));
-        ctrlBox.setStyle("-fx-background-color: " + SURFACE + "; -fx-background-radius: 10; "
-                + "-fx-border-color: " + BORDER_SUBTLE + "; -fx-border-width: 1;");
+        ctrlBox.setStyle(SOFT_PANEL_STYLE);
         Button clearBtn = createStyledButton("Clear", ERROR_RED);
         clearBtn.setOnAction(e -> sessionsArea.clear());
         Button copyBtn = createStyledButton("Copy", ACCENT_BLUE);
@@ -3090,29 +3293,29 @@ public class MainUI extends Application {
     }
 
     private VBox createManualPlayView() {
-        VBox box = new VBox(15);
-        box.setPadding(new Insets(20));
+        VBox box = new VBox(16);
+        box.setPadding(new Insets(24));
         box.setStyle("-fx-background-color: " + LIGHT_GRAY + ";");
 
         Label title = new Label("🎮 Manual Mode");
-        title.setStyle("-fx-font-size: 26; -fx-font-weight: 700; -fx-text-fill: " + PRIMARY_BLUE + ";");
+        title.setStyle("-fx-font-size: 25; -fx-font-weight: 800; -fx-text-fill: " + PRIMARY_BLUE + ";");
 
         HBox topBox = new HBox(15);
         topBox.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         manualBuyerSelect = new ComboBox<>(manualBuyerAgents);
         manualBuyerSelect.setPromptText("Select Manual Buyer");
         manualBuyerSelect.setPrefWidth(200);
+        manualBuyerSelect.setStyle(comboBoxStyle());
         topBox.getChildren().addAll(new Label("Controlling:"), manualBuyerSelect);
 
         manualLogArea = new TextArea();
         manualLogArea.setEditable(false);
         manualLogArea.setWrapText(true);
-        manualLogArea.setStyle("-fx-font-size: 13; -fx-font-family: 'Courier New';");
+        manualLogArea.setStyle(textAreaStyle(true));
 
         VBox actionPanel = new VBox(10);
-        actionPanel.setPadding(new Insets(15));
-        actionPanel.setStyle("-fx-background-color: " + SURFACE + "; -fx-border-color: " + BORDER_SUBTLE
-                + "; -fx-border-width: 1; -fx-background-radius: 8;");
+        actionPanel.setPadding(new Insets(18));
+        actionPanel.setStyle(PANEL_STYLE);
 
         Label actionTitle = new Label("Action Panel");
         actionTitle.setStyle("-fx-font-weight: bold;");
@@ -3122,20 +3325,19 @@ public class MainUI extends Application {
         shortlistBox.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         manualDealerSelect = new ComboBox<>();
         manualDealerSelect.setPromptText("Select Dealer");
-        manualFirstOfferField = new TextField();
-        manualFirstOfferField.setPromptText("First Offer RM");
-        manualSendFirstOfferBtn = new Button("Send First Offer");
+        manualDealerSelect.setStyle(comboBoxStyle());
+        manualFirstOfferField = createStyledTextField("First Offer RM");
+        manualSendFirstOfferBtn = createStyledButton("Send First Offer", ACCENT_BLUE);
         manualSendFirstOfferBtn.setDisable(true);
         shortlistBox.getChildren().addAll(manualDealerSelect, manualFirstOfferField, manualSendFirstOfferBtn);
 
         // Negotiation controls
         HBox counterBox = new HBox(10);
         counterBox.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        manualCounterPriceField = new TextField();
-        manualCounterPriceField.setPromptText("Counter RM");
-        manualSendCounterBtn = new Button("Send Counter");
-        manualAcceptDealBtn = new Button("Accept Offer");
-        manualWalkAwayBtn = new Button("Walk Away");
+        manualCounterPriceField = createStyledTextField("Counter RM");
+        manualSendCounterBtn = createStyledButton("Send Counter", ACCENT_BLUE);
+        manualAcceptDealBtn = createStyledButton("Accept Offer", SUCCESS_GREEN);
+        manualWalkAwayBtn = createStyledButton("Walk Away", ERROR_RED);
 
         manualSendCounterBtn.setDisable(true);
         manualAcceptDealBtn.setDisable(true);
@@ -3267,6 +3469,8 @@ public class MainUI extends Application {
     private TextField createStyledTextField(String prompt) {
         TextField tf = new TextField();
         tf.setPromptText(prompt);
+        tf.setMinHeight(38);
+        tf.setMaxWidth(Double.MAX_VALUE);
         tf.setStyle(
                 "-fx-font-size: 14; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: " + FONT_WEIGHT_MEDIUM
                         + "; -fx-padding: 10 12; " +
@@ -3281,6 +3485,8 @@ public class MainUI extends Application {
         comboBox.getItems().addAll(CAR_MODELS);
         comboBox.setEditable(true);
         comboBox.setPrefWidth(300);
+        comboBox.setMinHeight(38);
+        comboBox.setMaxWidth(Double.MAX_VALUE);
         comboBox.setStyle(
                 "-fx-font-size: 14; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: " + FONT_WEIGHT_MEDIUM
                         + "; -fx-padding: 6 10; " +
@@ -3293,6 +3499,7 @@ public class MainUI extends Application {
 
     private Button createStyledButton(String text, String color) {
         Button btn = new Button(text);
+        btn.setMinHeight(38);
         btn.setStyle(
                 "-fx-font-size: 14; -fx-font-family: " + FONT_FAMILY + "; -fx-font-weight: 600; -fx-padding: 10 22; " +
                         "-fx-background-color: " + color + "; " +
