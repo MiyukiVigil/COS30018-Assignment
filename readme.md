@@ -598,6 +598,7 @@ To avoid that, buyers and dealers stretch their effective deadline when the rele
 - buyers compare maximum budget against the active dealer listing price;
 - dealers compare retail price against reserve price;
 - round-based movement still occurs, but the per-round step is smaller;
+- affordable dealer counters can close after a few rounds even if the utility score is low because the price is near the buyer's maximum budget;
 - acceptable utility alone does not close a narrow-window deal until a few rounds or cycles have passed.
 
 This keeps demos and custom low-gap scenarios from ending before the negotiation trajectory is visible.

@@ -591,14 +591,17 @@ public class BuyerAgent extends Agent {
         if (counter <= currentWillingOffer) {
             return true;
         }
-        if (!acceptableUtility(counterTerms)) {
+        if (counter > maxBudget) {
             return false;
         }
         if (isNarrowPriceWindow(counter)) {
             int minimumProgress = Math.min(3, Math.max(1, config.getMaxRoundsPerDealer() - 1));
             return Math.max(elapsedCycle, negotiationRound) >= minimumProgress;
         }
-        return negotiationRound >= 2;
+        if (acceptableUtility(counterTerms)) {
+            return negotiationRound >= 2;
+        }
+        return negotiationRound >= config.getMaxRoundsPerDealer();
     }
 
     private boolean isNarrowPriceWindow(int counterPrice) {
