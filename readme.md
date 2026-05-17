@@ -605,7 +605,7 @@ Because configuration is passed during agent creation, you can run different exp
 
 The JADE Sniffer is used to show real ACL messages between agents. It is useful for proving that the system is using agent communication rather than only Java method calls or UI logs.
 
-The app launches Sniffer with a focused preload for `broker`, `space`, and the demo agent name patterns. It avoids sniffing short-lived UI helper agents because those agents delete themselves quickly and can cause JADE AMS warnings.
+The app launches Sniffer with a focused preload for `broker` and `space`. Because all negotiation messages are routed through the broker, this still shows the buyer-broker and broker-dealer ACL traffic while avoiding short-lived buyer/dealer agents that may delete themselves and cause JADE AMS warnings.
 
 How to use it:
 

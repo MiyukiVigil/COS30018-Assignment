@@ -969,37 +969,13 @@ public class MainUI extends Application {
 
     private void launchSniffer(UILogger logger) {
         try {
-            // First try a wildcard pattern (captures demo agents like DemoBuyer*,
-            // DemoAuto*)
-            String wildcardTargets = "broker;space;DemoBuyer*;DemoAuto*;BudgetCars*;FamilyDrive*;TruckHub*";
-            try {
-                cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
-                        new Object[] { wildcardTargets }).start();
-                logger.log("STATUS: JADE Sniffer launched with wildcards: " + wildcardTargets);
-                return;
-            } catch (Exception ex) {
-                // Wildcard launch sometimes fails with AMS errors when agents terminate
-                // quickly.
-                logger.log("STATUS: Wildcard sniffer failed, falling back to explicit agent list: " + ex.getMessage());
-            }
-
-            // Fallback: Build a focused sniffer list from currently-known agents to avoid
-            // AMS errors
-            StringBuilder target = new StringBuilder();
-            target.append("broker;space");
-            synchronized (dealerAgents) {
-                for (String d : dealerAgents) {
-                    target.append(";").append(d);
-                }
-            }
-            synchronized (buyerAgents) {
-                for (String b : buyerAgents) {
-                    target.append(";").append(b);
-                }
-            }
+            // The broker is stable and every negotiation message is routed through it.
+            // Avoid sniffing short-lived demo buyer/dealer agents, because JADE AMS may
+            // warn when the Sniffer tries to detach from agents that already terminated.
+            String target = "broker;space";
             cc.createNewAgent(nextAgentName("sniffer"), "jade.tools.sniffer.Sniffer",
-                    new Object[] { target.toString() }).start();
-            logger.log("STATUS: JADE Sniffer Agent launched for broker, space, and specified agents.");
+                    new Object[] { target }).start();
+            logger.log("STATUS: JADE Sniffer launched for broker and space. Broker-routed messages remain visible.");
         } catch (Exception e) {
             logger.log("STATUS: Sniffer not launched: " + e.getMessage());
         }
