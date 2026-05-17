@@ -67,7 +67,7 @@ Runtime defaults are loaded from `src/main/resources/negotiation-defaults.proper
 
 1. Register one or more dealer agents in the Dealer Portal.
 2. Add buyer agents in the Buyer Portal. Buyers are created in a waiting state and do not negotiate immediately.
-3. Alternatively, press `Demo Setup` in the global controls to automatically create a heavier stress-test mix of sample dealers and waiting buyers.
+3. Alternatively, press `Demo Setup` in the global controls to automatically create three well-stocked sample dealers and a larger mix of waiting buyers.
 4. Use the global controls above the tabs to manage the demo from any screen.
 5. Press `Start` to begin all waiting buyer negotiations.
 6. Use `Pause` / `Resume` to control market cycles during the demo.
@@ -80,21 +80,20 @@ Demo Agents
 
 The demo setup creates a set of example agents that represent common marketplace roles and negotiation behaviours. Names follow patterns like `DemoAuto*` for dealers and `DemoBuyer*` for buyers; a numeric suffix is appended for each instance (e.g., `DemoAutoA-1`, `DemoBuyerPremium-1`). The demo agents are intended to help exercise different negotiation edge cases:
 
-- `DemoAutoA-*`, `DemoAutoB-*`, `DemoAutoC-*`: Competing Camry dealers with slightly different retail and reserve prices. They demonstrate price competition and how buyers select among multiple similar listings.
-- `BudgetCars-*`: A low-cost dealer (e.g., Honda Civic listings) that tests budget-sensitive buyers and mid-range deals.
-- `FamilyDrive-*`: A family/SUV-focused dealer (e.g., Honda CR-V) representing higher-priced inventory and buyers with larger budgets.
-- `TruckHub-*`: High-end truck dealer (e.g., Toyota Fortuner) to exercise high-budget buyers and extreme counter-offers.
+- `DemoAutoA-*`: Well-stocked Camry dealer. Most demo buyers negotiate here so the run shows varied buyer behaviour without frequent stock-out failures.
+- `BudgetCars-*`: Well-stocked Civic dealer that tests budget-sensitive buyers and mid-range deals.
+- `FamilyDrive-*`: Well-stocked SUV dealer (Honda CR-V) representing higher-priced inventory and larger-budget buyers.
 
 - `DemoBuyerPremium-*`: High-budget buyer who can stretch to pay near retail — useful to validate successful deals and commission calculations.
 - `DemoBuyerStubborn-*`: Conservative/boulware-style buyer who concedes slowly; useful to test negotiations that may drag and trigger strategy switching.
 - `DemoBuyerTight-*`: Budget-constrained buyer that often results in `NO_DEAL;BUDGET_TOO_LOW` outcomes.
-- `DemoBuyerCivic-*`: Buyer specifically targeting lower-priced models (e.g., Civic) to exercise broker search and matching.
-- `DemoBuyerSUV-*`: Buyer targeting SUVs (e.g., CR-V) with larger budgets.
-- `DemoBuyerStretch-*`: High-budget buyer for expensive models (e.g., Fortuner) that stresses multi-round negotiation for large-ticket items.
+- `DemoBuyerCivic-*`: Buyer specifically targeting lower-priced models (e.g., Civic) with about RM10,000 headroom, used to exercise narrow-budget pacing.
+- `DemoBuyerSUV-*`: Buyer targeting SUVs (e.g., CR-V) with about RM10,000 headroom so the cycle shift remains visible before closure.
+- `DemoBuyerStretch-*`: High-budget SUV buyer that stresses multi-round negotiation for larger-ticket items.
 - `DemoBuyerBudget-*`: Intentionally underfunded buyer to exercise the no-deal code paths and ensure broker records failures.
-- `DemoBuyerOverdrive-*`: Aggressive buyer that may accelerate concessions quickly; useful to test rapid deal closure.
+- `DemoBuyerOverdrive-*`: Aggressive buyer with a dedicated faster config. It starts stronger and switches strategy sooner than normal buyers, but still uses paced rounds so it does not close instantly.
 
-These demo agent archetypes are configurable via the Market Analysis settings; they exist to provide repeatable scenarios for testing strategy behaviour, sniffer visualization, and performance metrics.
+Most demo agent archetypes inherit the Market Analysis settings, while `DemoBuyerOverdrive-*` applies a dedicated faster buyer config. They exist to provide repeatable scenarios for testing strategy behaviour, sniffer visualization, and performance metrics.
 
 ## Main Files
 
@@ -115,7 +114,7 @@ These demo agent archetypes are configurable via the Market Analysis settings; t
 The controls above the tabs are available from every screen:
 
 - `Start`: sends `START_NEGOTIATION` to all waiting buyer agents.
-- `Demo Setup`: creates a stress-test scenario with 6 dealers and 8 waiting buyers, including competing Camry dealers, cross-model contention, a low-budget failure, and earlier strategy switching.
+- `Demo Setup`: creates a stress-test scenario with 3 well-stocked dealers and 8 waiting buyers, including varied Camry buyers, RM10,000-headroom buyers, one intentional low-budget failure, visible strategy switching, and extra rounds so negotiations do not fail immediately at the switch.
 - `Pause` / `Resume`: sends `PAUSE` or `RESUME` to `SpaceControl`.
 - `Stop`: sends `STOP_NEGOTIATION` to buyer agents and records `NO_DEAL;USER_STOPPED`.
 - `Step Cycle`: sends `STEP` to `SpaceControl` and advances one cycle immediately.
@@ -211,15 +210,15 @@ Main behaviour:
 5. Chooses up to three best dealer options and sends first-offer terms through the broker.
 6. Handles `REJECT_PROPOSAL` counter-offers.
 7. Sends revised multi-attribute terms if still negotiating.
-8. Handles `ACCEPT_PROPOSAL` and confirms the deal to the broker.
-9. Sends no-deal confirmation if budget, retry, or round limits are exceeded.
+8. Handles `ACCEPT_PROPOSAL`, logs the purchase, deregisters from `SpaceControl`, and terminates.
+9. Sends no-deal confirmation if budget, retry, or round limits are exceeded, then terminates.
 
 Important state:
 
 - `desiredCar`: requested car model.
 - `maxBudget`: maximum amount the buyer can pay.
 - `initialOffer`: starting offer based on configured buyer start percentage.
-- `currentWillingOffer`: buyer's current cycle-based offer.
+- `currentWillingOffer`: buyer's current cycle/round-paced offer.
 - `dealers`: dealer options returned by the broker.
 - `negotiationRound`: number of negotiation rounds with the current dealer.
 - `searchRetries`: number of broker search retries.
@@ -233,7 +232,7 @@ Main behaviour:
 
 1. Registers its car listing with the broker.
 2. Registers with `SpaceControl` to receive cycle updates.
-3. Calculates a dynamic target price each cycle.
+3. Calculates a dynamic target price from market cycles and local negotiation rounds.
 4. Receives buyer first-offer terms from the broker.
 5. Selects whether to engage the buyer; clearly unworkable first offers can be rejected.
 6. Accepts if the buyer terms meet price/utility targets.
@@ -245,7 +244,7 @@ Important state:
 
 - `retailPrice`: initial listed price.
 - `minPrice`: reserve price or lowest acceptable price.
-- `currentTargetPrice`: current asking target based on the cycle and strategy.
+- `currentTargetPrice`: current asking target based on cycle progress, negotiation rounds, strategy, and reserve protection.
 - `stockCount`: remaining stock.
 - `manualTargetPrice`: optional manual price override from the UI.
 
@@ -419,7 +418,7 @@ effectiveStrategy(t) =
 beta = beta(effectiveStrategy(t))
 ```
 
-Example: the UI default starts with `BOULWARE` and switches to `CONCEDER` at cycle `8`. This keeps agents firm early, then makes them more flexible if negotiation drags on.
+Example: the runtime default starts with `BOULWARE` and switches to `CONCEDER` at cycle `15`. Demo Setup shortens the switch to cycle `6` so the strategy change is visible during a quick classroom run.
 
 ## Strategy Values
 
@@ -445,25 +444,28 @@ This means Boulware only makes about 4% of its total concession early, while Con
 
 ## Dealer Formula
 
-The dealer starts near the retail price and gradually moves down toward the reserve price.
+The dealer starts near the retail price and gradually moves down toward the reserve price. Like the buyer, the dealer also considers local negotiation rounds so fast broker messages do not keep showing the same early target price. Once a dealer has conceded, later cycle updates never raise that dealer's remembered target.
 
 ```text
-DealerTarget(t) = P_retail - (P_retail - P_reserve) * (t / T) ^ beta
+DealerTarget(p) = P_retail - (P_retail - P_reserve) * (p / T_effective) ^ beta
 ```
+
+`p` is the greater of elapsed market cycles and local negotiation rounds. For narrow retail-to-reserve windows around RM10,000, the dealer stretches `T_effective` so it does not drop to reserve too quickly.
 
 In code:
 
 ```java
-double concessionFactor = Math.pow((double) t / config.getDeadlineCycles(), config.beta());
+double concessionFactor = Math.pow((double) p / effectiveDeadlineCycles, config.betaForCycle(strategyStep));
 int cycleTarget = (int) (retailPrice - ((retailPrice - minPrice) * concessionFactor));
-currentTargetPrice = Math.max(minPrice, cycleTarget);
+currentTargetPrice = Math.min(currentTargetPrice, Math.max(minPrice, cycleTarget));
 ```
 
 Interpretation:
 
-- At `t = 0`, the target is close to `P_retail`.
-- At `t = T`, the target reaches `P_reserve`.
+- At `p = 0`, the target is close to `P_retail`.
+- At `p = T_effective`, the target reaches `P_reserve`.
 - The dealer never goes below reserve price.
+- The dealer target never increases after round-based concession has lowered it.
 - If the UI sends a manual price adjustment, the dealer uses that target while still protecting the reserve price.
 
 Example:
@@ -494,25 +496,28 @@ So the Conceder dealer lowers price much faster.
 
 ## Buyer Formula
 
-The buyer starts from a lower initial offer and gradually increases toward the maximum budget.
+The buyer starts from a lower initial offer and gradually increases toward the maximum budget. The displayed offer uses market cycle progress, but counter-offers also consider the local negotiation round so fast message exchanges do not repeat the same early price. Once a buyer accelerates, later cycle updates never reduce that buyer's remembered willing offer.
 
 ```text
-BuyerOffer(t) = B_initial + (B_max - B_initial) * (t / T) ^ beta
+BuyerOffer(p) = B_initial + (B_max - B_initial) * (p / T_effective) ^ beta
 ```
+
+`p` is the greater of elapsed market cycles and local negotiation rounds. For narrow affordability windows around RM10,000, the buyer stretches `T_effective` so high-money agents do not immediately jump to their maximum offer.
 
 In code:
 
 ```java
-double concessionFactor = Math.pow((double) t / config.getDeadlineCycles(), config.beta());
-currentWillingOffer = (int) (initialOffer + ((maxBudget - initialOffer) * concessionFactor));
-currentWillingOffer = Math.min(currentWillingOffer, maxBudget);
+double concessionFactor = Math.pow((double) p / effectiveDeadlineCycles, config.betaForCycle(strategyStep));
+int cycleOffer = (int) (initialOffer + ((maxBudget - initialOffer) * concessionFactor));
+currentWillingOffer = Math.max(currentWillingOffer, Math.min(cycleOffer, maxBudget));
 ```
 
 Interpretation:
 
 - At `t = 0`, the buyer starts around `B_initial`.
-- At `t = T`, the buyer reaches `B_max`.
+- At `p = T_effective`, the buyer reaches `B_max`.
 - The buyer never offers more than the maximum budget.
+- If the buyer has only about RM10,000 headroom over the target listing, the effective deadline is stretched to keep negotiation from ending immediately.
 
 Example:
 
@@ -542,10 +547,12 @@ So the Conceder buyer increases their offer much faster.
 
 ## Deal Decision Rule
 
-A dealer accepts when:
+A dealer accepts when the buyer's terms meet either the price target or the dealer's utility threshold:
 
 ```text
 BuyerOffer >= DealerTarget
+or
+DealerUtility(buyerTerms) >= acceptanceThreshold
 ```
 
 If true:
@@ -554,6 +561,8 @@ If true:
 - Broker sends `ACCEPT_PROPOSAL` with `BROKER_RELAY_ACCEPT` to Buyer.
 - Broker records the transaction.
 - Dealer stock decreases by one.
+- The buyer terminates after receiving the broker's acceptance relay.
+- If dealer stock reaches zero, the dealer terminates and the broker removes that listing from inventory.
 
 If false:
 
@@ -576,6 +585,19 @@ currentWillingOffer = Math.min(
 ```
 
 This halves the remaining gap between the current offer and maximum budget. It helps prevent long negotiations from dragging indefinitely.
+
+## Narrow Price Window Pacing
+
+Some high-money agents can afford a listing with only about RM10,000 of negotiation headroom. Without pacing, those agents can satisfy the acceptance rule almost immediately, making cycle shifts and strategy changes hard to observe.
+
+To avoid that, buyers and dealers stretch their effective deadline when the relevant price window is at or below RM10,000:
+
+- buyers compare maximum budget against the active dealer listing price;
+- dealers compare retail price against reserve price;
+- round-based movement still occurs, but the per-round step is smaller;
+- acceptable utility alone does not close a narrow-window deal until a few rounds or cycles have passed.
+
+This keeps demos and custom low-gap scenarios from ending before the negotiation trajectory is visible.
 
 ## Dynamic Configuration
 
@@ -606,7 +628,8 @@ Because configuration is passed during agent creation, you can run different exp
 | Too many failed rounds | Buyer moves to another dealer, up to three dealers, or reports `NO_DEAL;MAX_ROUNDS_REACHED`. |
 | Dealer rejects first offer | Only clearly unworkable first offers are rejected; otherwise the dealer sends a counter-offer. |
 | User presses Stop | Buyer reports `NO_DEAL;USER_STOPPED`. |
-| Dealer stock reaches zero | Dealer logs out of stock and terminates. |
+| Dealer stock reaches zero | Dealer logs out of stock, deregisters from `SpaceControl`, terminates, and the broker removes the listing from inventory. |
+| Buyer closes a deal | Buyer logs the purchase, deregisters from `SpaceControl`, terminates, and the UI removes it from active buyer lists. |
 | New dealer joins mid-simulation | Broker stores the listing, and future buyer searches can find the new dealer. |
 | Manual price change | UI sends `PRICE_ADJUSTMENT` to a dealer, and the dealer updates its target price while respecting reserve price. |
 
@@ -667,7 +690,7 @@ By default the fixed session fee is `RM50` and commission is `5%` of the final s
 
 ## Limitations
 
-- Buyer and dealer strategies are currently symmetric: both use the same selected strategy beta.
+- Standard agents use the strategy settings they were created with. Demo Overdrive intentionally uses a faster buyer-side config to show a different negotiation profile.
 - Existing agents keep the configuration they were created with; changing settings affects newly created agents.
 - Broker inventory is in memory only and resets when the application restarts.
 - The Sniffer is a JADE debugging tool. The app preloads demo/system agents, but custom buyer/dealer names may still require manual selection inside the Sniffer window.

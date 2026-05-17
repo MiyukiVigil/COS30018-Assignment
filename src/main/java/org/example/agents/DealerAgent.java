@@ -38,8 +38,10 @@ public class DealerAgent extends Agent {
     private UtilityPreferences preferences = AppConfig.defaults().utilityPreferences();
     private int    stockCount;
     private int    manualTargetPrice = -1;
+    private int    latestCycle = 0;
     private NegotiationConfig.Strategy activeStrategy;
     private final Map<String, DealerSessionState> activeSessions = new LinkedHashMap<>();
+    private static final int NARROW_PRICE_WINDOW = 10_000;
 
     private static class DealerSessionState {
         String sessionId;
@@ -124,19 +126,15 @@ public class DealerAgent extends Agent {
 
     private void handleCycleUpdate(ACLMessage msg) {
         int currentCycle = Integer.parseInt(msg.getContent());
-        int t = Math.min(currentCycle, config.getDeadlineCycles());
+        latestCycle = Math.min(Math.max(0, currentCycle), config.getDeadlineCycles());
 
-        NegotiationConfig.Strategy effective = config.getEffectiveStrategy(t);
+        NegotiationConfig.Strategy effective = config.getEffectiveStrategy(latestCycle);
         if (effective != activeStrategy) {
             activeStrategy = effective;
-            log("STATUS: Strategy shifted to " + activeStrategy + " at cycle " + t);
+            log("STATUS: Strategy shifted to " + activeStrategy + " at cycle " + latestCycle);
         }
-        double concessionFactor = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
-        int cycleTarget = (int)(retailPrice - ((retailPrice - minPrice) * concessionFactor));
-        currentTargetPrice = manualTargetPrice >= 0
-                ? Math.max(minPrice, manualTargetPrice)
-                : Math.max(minPrice, (int)(cycleTarget * config.getManualDealerTargetPercent()));
-        log("Price updated to RM" + currentTargetPrice + " (cycle " + t + ")");
+        currentTargetPrice = Math.min(currentTargetPrice, calculateTargetPrice(latestCycle));
+        log("Price updated to RM" + currentTargetPrice + " (cycle " + latestCycle + ")");
     }
 
     private void handleManualPriceAdjustment(ACLMessage msg) {
@@ -180,6 +178,7 @@ public class DealerAgent extends Agent {
         state.latestTerms = buyerTerms;
         state.rounds++;
         negotiationCount++;
+        moveTargetForNegotiationRound(state.rounds);
 
         log("OFFER #" + negotiationCount + ": [" + sessionId + "] Buyer offered RM" + buyerOffer
                 + termsText(buyerTerms) + " (target=RM" + currentTargetPrice + ")");
@@ -298,6 +297,49 @@ public class DealerAgent extends Agent {
         int defaultDelivery = preferences.getDefaultDeliveryDays();
         int delivery = defaultDelivery + (int) Math.round(defaultDelivery * concession);
         return new NegotiationTerms(currentTargetPrice, warranty, delivery);
+    }
+
+    private int calculateTargetPrice(int progressStep) {
+        if (manualTargetPrice >= 0) {
+            return Math.max(minPrice, manualTargetPrice);
+        }
+        int effectiveDeadline = effectiveDealerDeadlineCycles();
+        int boundedStep = Math.min(Math.max(0, progressStep), effectiveDeadline);
+        int strategyStep = scaleProgressToConfigCycle(boundedStep, effectiveDeadline);
+        double concessionFactor = Math.pow((double) boundedStep / effectiveDeadline,
+                config.betaForCycle(strategyStep));
+        int target = (int) Math.round(retailPrice - ((retailPrice - minPrice) * concessionFactor));
+        return Math.max(minPrice, (int) Math.round(target * config.getManualDealerTargetPercent()));
+    }
+
+    private void moveTargetForNegotiationRound(int round) {
+        if (manualTargetPrice >= 0) {
+            currentTargetPrice = Math.max(minPrice, manualTargetPrice);
+            return;
+        }
+        int progressStep = Math.max(latestCycle, round);
+        int roundBasedTarget = calculateTargetPrice(progressStep);
+        if (roundBasedTarget >= currentTargetPrice && currentTargetPrice > minPrice) {
+            roundBasedTarget = currentTargetPrice - Math.max(1, (retailPrice - minPrice) / effectiveDealerDeadlineCycles());
+        }
+        currentTargetPrice = Math.max(minPrice, roundBasedTarget);
+    }
+
+    private int effectiveDealerDeadlineCycles() {
+        int deadline = config.getDeadlineCycles();
+        int priceWindow = retailPrice - minPrice;
+        if (priceWindow > 0 && priceWindow <= NARROW_PRICE_WINDOW) {
+            return Math.max(deadline, deadline * 2);
+        }
+        return deadline;
+    }
+
+    private int scaleProgressToConfigCycle(int progressStep, int effectiveDeadline) {
+        if (effectiveDeadline == config.getDeadlineCycles()) {
+            return Math.min(progressStep, config.getDeadlineCycles());
+        }
+        return Math.min(config.getDeadlineCycles(),
+                (int) Math.round((double) progressStep * config.getDeadlineCycles() / effectiveDeadline));
     }
 
     private boolean acceptableUtility(NegotiationTerms terms) {

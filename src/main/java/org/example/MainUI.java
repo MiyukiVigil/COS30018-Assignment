@@ -115,6 +115,8 @@ public class MainUI extends Application {
     private List<String> waitingBuyerAgents = new ArrayList<>();
     private List<String> buyerAgents = new ArrayList<>();
     private List<String> dealerAgents = new ArrayList<>();
+    private final Set<String> registeredBuyerNames = new HashSet<>();
+    private final Set<String> registeredDealerNames = new HashSet<>();
     private javafx.collections.ObservableList<String> manualBuyerAgents = javafx.collections.FXCollections
             .observableArrayList();
     private ComboBox<String> manualBuyerSelect;
@@ -299,14 +301,10 @@ public class MainUI extends Application {
 
                 // ── Stat counters ─────────────────────────────────────────────
                 if (isBuyerReg) {
-                    buyerCount++;
-                    buyerCountLabel.setText(String.valueOf(buyerCount));
-                    updateBuyerStatus();
+                    registerBuyerInDashboard(extractQuotedName(msg));
                 }
                 if (isDealerReg) {
-                    dealerCount++;
-                    dealerCountLabel.setText(String.valueOf(dealerCount));
-                    updateDealerStatus();
+                    registerDealerInDashboard(extractQuotedName(msg));
                 }
 
                 if (isSessionStart) {
@@ -990,15 +988,59 @@ public class MainUI extends Application {
             return;
         }
         String agentName = msg.substring(0, colon).trim();
+        boolean wasBuyer;
+        boolean wasDealer;
         synchronized (buyerAgents) {
-            buyerAgents.remove(agentName);
+            wasBuyer = buyerAgents.remove(agentName);
         }
         synchronized (dealerAgents) {
-            dealerAgents.remove(agentName);
+            wasDealer = dealerAgents.remove(agentName);
         }
         waitingBuyerAgents.remove(agentName);
         manualBuyerAgents.remove(agentName);
+        if (registeredBuyerNames.remove(agentName) || wasBuyer) {
+            buyerCount = Math.max(0, buyerCount - 1);
+            buyerCountLabel.setText(String.valueOf(buyerCount));
+            updateBuyerStatus();
+        }
+        if (registeredDealerNames.remove(agentName) || wasDealer) {
+            dealerCount = Math.max(0, dealerCount - 1);
+            dealerCountLabel.setText(String.valueOf(dealerCount));
+            updateDealerStatus();
+            removeDealerListings(agentName);
+        }
         updateNegotiationControlStatus();
+        refreshNegotiationVisualiser();
+    }
+
+    private void registerBuyerInDashboard(String agentName) {
+        if (agentName != null && !registeredBuyerNames.add(agentName)) {
+            return;
+        }
+        buyerCount++;
+        buyerCountLabel.setText(String.valueOf(buyerCount));
+        updateBuyerStatus();
+    }
+
+    private void registerDealerInDashboard(String agentName) {
+        if (agentName != null && !registeredDealerNames.add(agentName)) {
+            return;
+        }
+        dealerCount++;
+        dealerCountLabel.setText(String.valueOf(dealerCount));
+        updateDealerStatus();
+    }
+
+    private String extractQuotedName(String msg) {
+        int firstQuote = msg.indexOf('\'');
+        if (firstQuote < 0) {
+            return null;
+        }
+        int secondQuote = msg.indexOf('\'', firstQuote + 1);
+        if (secondQuote <= firstQuote + 1) {
+            return null;
+        }
+        return msg.substring(firstQuote + 1, secondQuote);
     }
 
     private void recordFailureReport(String msg) {
@@ -1235,8 +1277,8 @@ public class MainUI extends Application {
 
         // ── 6 stat cards (3 per row) ─────────────────────────────────────────
         HBox statsRow1 = new HBox(12,
-                createStatCard("🧑 Buyers", buyerCountLabel, ACCENT_BLUE),
-                createStatCard("🚗 Dealers", dealerCountLabel, WARNING_ORANGE),
+                createStatCard("🧑 Active Buyers", buyerCountLabel, ACCENT_BLUE),
+                createStatCard("🚗 Active Dealers", dealerCountLabel, WARNING_ORANGE),
                 createStatCard("🔁 Active Sessions", activeSessionsLabel, "#8b5cf6"));
         HBox statsRow2 = new HBox(12,
                 createStatCard("✅ Deals Closed", transactionCountLabel, SUCCESS_GREEN),
@@ -2366,6 +2408,10 @@ public class MainUI extends Application {
         refreshNegotiationVisualiser();
     }
 
+    private void removeDealerListings(String dealer) {
+        listingModelMap.entrySet().removeIf(entry -> dealer.equals(entry.getValue().dealer));
+    }
+
     private String listingKey(String dealer, String car) {
         return valueOrNA(dealer) + "|" + valueOrNA(car);
     }
@@ -2604,6 +2650,7 @@ public class MainUI extends Application {
                 cc.createNewAgent(name, "org.example.agents.BuyerAgent",
                         new Object[] { car, budgetStr, logger, buildNegotiationConfig(), true, isManual }).start();
                 buyerAgents.add(name);
+                registerBuyerInDashboard(name);
                 if (isManual) {
                     manualBuyerAgents.add(name);
                     if (manualBuyerSelect != null && manualBuyerSelect.getValue() == null) {
@@ -2787,12 +2834,9 @@ public class MainUI extends Application {
 
         try {
             String[][] dealers = new String[][] {
-                    { "DemoAutoA-" + demoId, "Toyota Camry", "100000", "2" },
-                    { "DemoAutoB-" + demoId, "Toyota Camry", "96000", "2" },
-                    { "DemoAutoC-" + demoId, "Toyota Camry", "92000", "1" },
-                    { "BudgetCars-" + demoId, "Honda Civic", "87000", "2" },
-                    { "FamilyDrive-" + demoId, "Honda CR-V", "145000", "1" },
-                    { "TruckHub-" + demoId, "Toyota Fortuner", "180000", "1" }
+                    { "DemoAutoA-" + demoId, "Toyota Camry", "100000", "6" },
+                    { "BudgetCars-" + demoId, "Honda Civic", "87000", "3" },
+                    { "FamilyDrive-" + demoId, "Honda CR-V", "145000", "3" }
             };
             for (String[] dealer : dealers) {
                 createDemoDealer(dealer[0], dealer[1], dealer[2], dealer[3], config);
@@ -2802,21 +2846,23 @@ public class MainUI extends Application {
                     { "DemoBuyerPremium-" + demoId, "Toyota Camry", "116000" },
                     { "DemoBuyerStubborn-" + demoId, "Toyota Camry", "108000" },
                     { "DemoBuyerTight-" + demoId, "Toyota Camry", "98000" },
-                    { "DemoBuyerCivic-" + demoId, "Honda Civic", "102000" },
-                    { "DemoBuyerSUV-" + demoId, "Honda CR-V", "150000" },
-                    { "DemoBuyerStretch-" + demoId, "Toyota Fortuner", "168000" },
-                    { "DemoBuyerBudget-" + demoId, "Toyota Camry", "65000" },
-                    { "DemoBuyerOverdrive-" + demoId, "Toyota Camry", "112000" }
+                    { "DemoBuyerCivic-" + demoId, "Honda Civic", "97000" },
+                    { "DemoBuyerSUV-" + demoId, "Honda CR-V", "155000" },
+                    { "DemoBuyerStretch-" + demoId, "Honda CR-V", "165000" },
+                    { "DemoBuyerBudget-" + demoId, "Toyota Camry", "65000" }
             };
             for (String[] buyer : buyers) {
                 createDemoBuyer(buyer[0], buyer[1], buyer[2], config);
             }
+            createDemoBuyer("DemoBuyerOverdrive-" + demoId, "Toyota Camry", "102000",
+                    buildOverdriveNegotiationConfig(config));
+            int demoBuyerCount = buyers.length + 1;
 
             updateNegotiationControlStatus();
             refreshNegotiationVisualiser();
 
-            loggerLog("Demo scenario " + demoId + " added: " + dealers.length + " dealers and " + buyers.length
-                    + " waiting buyers. Press Start to stress test negotiation and strategy switching.");
+            loggerLog("Demo scenario " + demoId + " added: " + dealers.length + " well-stocked dealers and "
+                    + demoBuyerCount + " waiting buyers. Press Start to stress test negotiation and strategy switching.");
             showAlert("Demo scenario added. Press Start to begin negotiation.", Alert.AlertType.INFORMATION);
         } catch (Exception ex) {
             showAlert("❌ Error creating demo scenario: " + ex.getMessage(), Alert.AlertType.ERROR);
@@ -2830,13 +2876,27 @@ public class MainUI extends Application {
                 Math.max(base.getDeadlineCycles(), 30),
                 Math.min(base.getBuyerStartPercent(), 0.62),
                 Math.max(base.getDealerReservePercent(), 0.78),
-                Math.max(base.getMaxRoundsPerDealer(), 6),
+                Math.max(base.getMaxRoundsPerDealer(), 10),
                 Math.max(base.getMaxSearchRetries(), 1),
                 Math.max(base.getStuckRoundsBeforeAcceleration(), 1),
                 base.getManualDealerTargetPercent(),
-                base.getStrategySwitchCycle() > 0 ? Math.min(base.getStrategySwitchCycle(), 2) : 2,
+                base.getStrategySwitchCycle() > 0 ? Math.min(base.getStrategySwitchCycle(), 6) : 6,
                 base.getSwitchStrategy() == base.getStrategy() ? NegotiationConfig.Strategy.CONCEDER
                         : base.getSwitchStrategy());
+    }
+
+    private NegotiationConfig buildOverdriveNegotiationConfig(NegotiationConfig base) {
+        return new NegotiationConfig(
+                NegotiationConfig.Strategy.LINEAR,
+                Math.max(24, Math.min(base.getDeadlineCycles(), 30)),
+                Math.max(base.getBuyerStartPercent(), 0.70),
+                base.getDealerReservePercent(),
+                Math.max(base.getMaxRoundsPerDealer(), 12),
+                base.getMaxSearchRetries(),
+                2,
+                base.getManualDealerTargetPercent(),
+                6,
+                NegotiationConfig.Strategy.CONCEDER);
     }
 
     private void createDemoDealer(String name, String car, String price, String stock, NegotiationConfig config)
@@ -2845,6 +2905,7 @@ public class MainUI extends Application {
                 new Object[] { car, price, stock, appLogger, config }).start();
         loggerLog("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
         dealerAgents.add(name);
+        registerDealerInDashboard(name);
         recordDealerListing(name, car, Integer.parseInt(price), Integer.parseInt(stock), config);
     }
 
@@ -2853,6 +2914,8 @@ public class MainUI extends Application {
                 new Object[] { car, budget, appLogger, config, true }).start();
         buyerAgents.add(name);
         waitingBuyerAgents.add(name);
+        registerBuyerInDashboard(name);
+        updateNegotiationControlStatus();
         loggerLog("Buyer '" + name + "' added and waiting - " + car + " budget RM" + budget);
         refreshNegotiationVisualiser();
     }
@@ -2938,6 +3001,7 @@ public class MainUI extends Application {
                         new Object[] { car, price, stock, logger, config }).start();
                 logger.log("Dealer '" + name + "' listed " + car + " @ RM" + price + " | Stock: " + stock);
                 dealerAgents.add(name);
+                registerDealerInDashboard(name);
                 recordDealerListing(name, car, (int) priceAmount, stockAmount, config);
                 dealerName.clear();
                 carModel.setValue(null);

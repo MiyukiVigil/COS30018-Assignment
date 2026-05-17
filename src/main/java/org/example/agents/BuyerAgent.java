@@ -38,6 +38,7 @@ public class BuyerAgent extends Agent {
     private boolean negotiationStarted = true;  // false = wait for manual start signal
     private boolean isManualStrategy = false;
     private static final int MAX_DEALER_NEGOTIATIONS = 3;
+    private static final int NARROW_PRICE_WINDOW = 10_000;
 
     // ── Negotiation state ─────────────────────────────────────────────────────
     private final List<DealerOption> dealers = new ArrayList<>();
@@ -47,8 +48,10 @@ public class BuyerAgent extends Agent {
 
     private int    negotiationRound       = 0;
     private int    startCycle             = -1;
+    private int    elapsedCycle           = 0;
     private int    searchRetries          = 0;
     private boolean dealFound             = false;
+    private int    activeDealerListedPrice = -1;
 
     private int    initialOffer;
     private int    currentWillingOffer;
@@ -185,15 +188,13 @@ public class BuyerAgent extends Agent {
         int currentCycle = Integer.parseInt(msg.getContent());
         if (startCycle == -1) startCycle = currentCycle;
 
-        int t = Math.min(currentCycle - startCycle, config.getDeadlineCycles());
-        NegotiationConfig.Strategy effective = config.getEffectiveStrategy(t);
+        elapsedCycle = Math.min(Math.max(0, currentCycle - startCycle), config.getDeadlineCycles());
+        NegotiationConfig.Strategy effective = config.getEffectiveStrategy(elapsedCycle);
         if (effective != activeStrategy) {
             activeStrategy = effective;
-            log("STATUS: Strategy shifted to " + activeStrategy + " at local cycle " + t);
+            log("STATUS: Strategy shifted to " + activeStrategy + " at local cycle " + elapsedCycle);
         }
-        double concession = Math.pow((double) t / config.getDeadlineCycles(), config.betaForCycle(t));
-        currentWillingOffer = (int)(initialOffer + ((maxBudget - initialOffer) * concession));
-        if (currentWillingOffer > maxBudget) currentWillingOffer = maxBudget;
+        currentWillingOffer = Math.max(currentWillingOffer, calculateWillingOffer(elapsedCycle));
         currentTerms = buyerTermsForPrice(currentWillingOffer);
         log("Willing to pay RM" + currentWillingOffer + " for " + desiredCar
                 + termsText(currentTerms));
@@ -297,6 +298,7 @@ public class BuyerAgent extends Agent {
 
         DealerOption dealer = dealers.get(currentDealerIdx);
         negotiationRound = 0;
+        activeDealerListedPrice = dealer.listedPrice;
         activeSessionId  = getLocalName() + "-" + desiredCar + "-" + dealerAttemptIndex;
 
         NegotiationTerms firstTerms = buyerTermsForPrice(currentWillingOffer);
@@ -339,12 +341,13 @@ public class BuyerAgent extends Agent {
             return;
         }
 
-        if (counter <= currentWillingOffer || acceptableUtility(counterTerms)) {
+        if (shouldAcceptCounter(counterTerms)) {
             // Deal! Send agreeing counter back via broker (broker will forward to dealer)
             sendBuyerCounter(sid, counterTerms);
             log("AGREED: Counter RM" + counter + " is within budget. Sending final offer.");
             // Note: the actual deal confirmation comes from DEALER_ACCEPT → BROKER_RELAY_ACCEPT
         } else if (negotiationRound < config.getMaxRoundsPerDealer()) {
+            moveOfferForNegotiationRound();
             // Acceleration if stuck
             if (negotiationRound >= config.getStuckRoundsBeforeAcceleration()) {
                 currentWillingOffer = Math.min(maxBudget,
@@ -543,6 +546,66 @@ public class BuyerAgent extends Agent {
         int defaultDelivery = preferences.getDefaultDeliveryDays();
         int delivery = Math.max(3, defaultDelivery - (int) Math.round((defaultDelivery - 3) * progress));
         return new NegotiationTerms(price, warranty, delivery);
+    }
+
+    private int calculateWillingOffer(int progressStep) {
+        int effectiveDeadline = effectiveBuyerDeadlineCycles();
+        int boundedStep = Math.min(Math.max(0, progressStep), effectiveDeadline);
+        int strategyStep = scaleProgressToConfigCycle(boundedStep, effectiveDeadline);
+        double concession = Math.pow((double) boundedStep / effectiveDeadline,
+                config.betaForCycle(strategyStep));
+        return Math.min(maxBudget, (int) Math.round(initialOffer + ((maxBudget - initialOffer) * concession)));
+    }
+
+    private void moveOfferForNegotiationRound() {
+        int progressStep = Math.max(elapsedCycle, negotiationRound);
+        int roundBasedOffer = calculateWillingOffer(progressStep);
+        if (roundBasedOffer <= currentWillingOffer && currentWillingOffer < maxBudget) {
+            roundBasedOffer = currentWillingOffer + Math.max(1, (maxBudget - initialOffer) / effectiveBuyerDeadlineCycles());
+        }
+        currentWillingOffer = Math.min(maxBudget, roundBasedOffer);
+        currentTerms = buyerTermsForPrice(currentWillingOffer);
+    }
+
+    private int effectiveBuyerDeadlineCycles() {
+        int deadline = config.getDeadlineCycles();
+        int affordabilityWindow = activeDealerListedPrice > 0
+                ? maxBudget - activeDealerListedPrice
+                : maxBudget - initialOffer;
+        if (affordabilityWindow >= 0 && affordabilityWindow <= NARROW_PRICE_WINDOW) {
+            return Math.max(deadline, deadline * 2);
+        }
+        return deadline;
+    }
+
+    private int scaleProgressToConfigCycle(int progressStep, int effectiveDeadline) {
+        if (effectiveDeadline == config.getDeadlineCycles()) {
+            return Math.min(progressStep, config.getDeadlineCycles());
+        }
+        return Math.min(config.getDeadlineCycles(),
+                (int) Math.round((double) progressStep * config.getDeadlineCycles() / effectiveDeadline));
+    }
+
+    private boolean shouldAcceptCounter(NegotiationTerms counterTerms) {
+        int counter = counterTerms.getPrice();
+        if (counter <= currentWillingOffer) {
+            return true;
+        }
+        if (!acceptableUtility(counterTerms)) {
+            return false;
+        }
+        if (isNarrowPriceWindow(counter)) {
+            int minimumProgress = Math.min(3, Math.max(1, config.getMaxRoundsPerDealer() - 1));
+            return Math.max(elapsedCycle, negotiationRound) >= minimumProgress;
+        }
+        return negotiationRound >= 2;
+    }
+
+    private boolean isNarrowPriceWindow(int counterPrice) {
+        int affordabilityWindow = activeDealerListedPrice > 0
+                ? maxBudget - activeDealerListedPrice
+                : maxBudget - counterPrice;
+        return affordabilityWindow >= 0 && affordabilityWindow <= NARROW_PRICE_WINDOW;
     }
 
     private boolean acceptableUtility(NegotiationTerms terms) {

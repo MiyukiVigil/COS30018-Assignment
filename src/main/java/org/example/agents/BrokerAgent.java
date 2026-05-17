@@ -408,11 +408,17 @@ public class BrokerAgent extends Agent {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private void reduceStock(String dealerName, String carModel) {
-        for (CarListing cl : inventory) {
+        Iterator<CarListing> iterator = inventory.iterator();
+        while (iterator.hasNext()) {
+            CarListing cl = iterator.next();
             if (cl.dealer.equals(dealerName)
                     && cl.model.equalsIgnoreCase(carModel)
                     && cl.stock > 0) {
                 cl.stock--;
+                if (cl.stock == 0) {
+                    iterator.remove();
+                    log("LISTING REMOVED: " + carModel + " from " + dealerName + " | Reason=SOLD_OUT");
+                }
                 return;
             }
         }
