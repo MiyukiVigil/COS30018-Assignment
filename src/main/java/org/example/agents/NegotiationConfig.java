@@ -59,8 +59,7 @@ public class NegotiationConfig implements Serializable {
     }
 
     public static NegotiationConfig defaults() {
-        return new NegotiationConfig(Strategy.BOULWARE, 50, 0.70, 0.70, 3, 2, 2, 1.0,
-                15, Strategy.CONCEDER);
+        return AppConfig.defaults().negotiationConfig();
     }
 
     public double beta() {
