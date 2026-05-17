@@ -86,6 +86,13 @@ public class SpaceControl extends Agent {
                                 } catch (NumberFormatException ignored) {
                                     log("SET_SPEED: invalid content '" + msg.getContent() + "' — ignored.");
                                 }
+                            } else if ("RESET_SESSION".equals(ontology)) {
+                                activeAgents.clear();
+                                completeAgents.clear();
+                                cycleCount = 0;
+                                isPaused = false;
+                                cycleAdvancePending = false;
+                                log("RESET: Space Control cycle and registered agents cleared.");
                             }
                         } else {
                             block();

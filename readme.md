@@ -74,6 +74,7 @@ Runtime defaults are loaded from `src/main/resources/negotiation-defaults.proper
 7. Use `Step Cycle` to manually advance the market one cycle at a time.
 8. Use `Sniffer` to open the JADE Sniffer and observe ACL messages.
 9. Use `Stop` to terminate active buyer negotiations and record them as `NO_DEAL;USER_STOPPED`.
+10. Use `Clear Session` to reset the broker, space-control cycle, active agents, metrics, logs, and visualisers before starting another run.
 
 Demo Agents
 ----------
@@ -117,6 +118,7 @@ The controls above the tabs are available from every screen:
 - `Demo Setup`: creates a stress-test scenario with 3 well-stocked dealers and 8 waiting buyers, including varied Camry buyers, RM10,000-headroom buyers, one intentional low-budget failure, visible strategy switching, and extra rounds so negotiations do not fail immediately at the switch.
 - `Pause` / `Resume`: sends `PAUSE` or `RESUME` to `SpaceControl`.
 - `Stop`: sends `STOP_NEGOTIATION` to buyer agents and records `NO_DEAL;USER_STOPPED`.
+- `Clear Session`: kills current buyer/dealer agents, clears broker inventory and sessions, resets the cycle count, and clears UI metrics/logs/visualisers for a fresh run.
 - `Step Cycle`: sends `STEP` to `SpaceControl` and advances one cycle immediately.
 - `Sniffer`: launches the JADE Sniffer visual message tool.
 
@@ -319,6 +321,7 @@ Examples:
 | UI helper | Buyer | `INFORM` | `START_NEGOTIATION` | empty | Starts waiting buyer. |
 | UI helper | Buyer | `INFORM` | `STOP_NEGOTIATION` | empty | Stops buyer negotiation. |
 | UI helper | Dealer | `INFORM` | `PRICE_ADJUSTMENT` | `newPrice` | Manually adjusts dealer target price. |
+| UI helper | Broker/SpaceControl | `INFORM` | `RESET_SESSION` | empty | Clears broker state and resets the market cycle for a fresh run. |
 
 ## Sequence Diagrams
 
@@ -628,6 +631,7 @@ Because configuration is passed during agent creation, you can run different exp
 | Too many failed rounds | Buyer moves to another dealer, up to three dealers, or reports `NO_DEAL;MAX_ROUNDS_REACHED`. |
 | Dealer rejects first offer | Only clearly unworkable first offers are rejected; otherwise the dealer sends a counter-offer. |
 | User presses Stop | Buyer reports `NO_DEAL;USER_STOPPED`. |
+| User presses Clear Session | UI kills buyer/dealer agents, resets broker and space-control state, clears metrics/logs/visualisers, and keeps the app ready for a new setup. |
 | Dealer stock reaches zero | Dealer logs out of stock, deregisters from `SpaceControl`, terminates, and the broker removes the listing from inventory. |
 | Buyer closes a deal | Buyer logs the purchase, deregisters from `SpaceControl`, terminates, and the UI removes it from active buyer lists. |
 | New dealer joins mid-simulation | Broker stores the listing, and future buyer searches can find the new dealer. |

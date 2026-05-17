@@ -114,6 +114,7 @@ public class BrokerAgent extends Agent {
                     case "DEALER_SOLD_OUT":handleDealerSoldOut(msg);   break;
                     case "BUYER_COUNTER":  handleBuyerCounter(msg);    break;
                     case "BUYER_WALKAWAY": handleBuyerWalkaway(msg);   break;
+                    case "RESET_SESSION":  resetSessionState();        break;
                     default: break; // ignore REGISTER/DEREGISTER/CYCLE_UPDATE leaks
                 }
             }
@@ -465,6 +466,16 @@ public class BrokerAgent extends Agent {
         log(String.format(
                 "PERFORMANCE: Deals=%d | NoDeals=%d | AvgDeal=RM%.0f | AvgRounds=%.1f | SuccessRate=%.1f%%",
                 transactions.size(), noDealCount, avgPrice, avgRounds, successRate));
+    }
+
+    private void resetSessionState() {
+        inventory.clear();
+        sessions.clear();
+        transactions.clear();
+        totalRevenue = 0;
+        noDealCount = 0;
+        totalDealRounds = 0;
+        log("RESET: Broker inventory, sessions, revenue, and metrics cleared.");
     }
 
     private void log(String m) {

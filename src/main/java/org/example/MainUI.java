@@ -1129,6 +1129,15 @@ public class MainUI extends Application {
         }
     }
 
+    private void sendBrokerCommand(String command) {
+        try {
+            cc.createNewAgent(nextAgentName("broker-command"), "org.example.agents.SpaceCommandAgent",
+                    new Object[] { command, "broker", "" }).start();
+        } catch (Exception e) {
+            System.err.println("Error sending command to BrokerAgent: " + e.getMessage());
+        }
+    }
+
     private void sendDealerPriceAdjustment(String dealerName, String price) {
         try {
             cc.createNewAgent(nextAgentName("dealer-command"), "org.example.agents.SpaceCommandAgent",
@@ -1148,6 +1157,100 @@ public class MainUI extends Application {
                     new Object[] { command, agentName, content }).start();
         } catch (Exception e) {
             showAlert("❌ Error sending command to " + agentName + ": " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    private void clearSession() {
+        Set<String> agentsToKill = new LinkedHashSet<>();
+        synchronized (buyerAgents) {
+            agentsToKill.addAll(buyerAgents);
+        }
+        synchronized (dealerAgents) {
+            agentsToKill.addAll(dealerAgents);
+        }
+        agentsToKill.addAll(waitingBuyerAgents);
+        agentsToKill.addAll(registeredBuyerNames);
+        agentsToKill.addAll(registeredDealerNames);
+
+        for (String agentName : agentsToKill) {
+            killAgentIfPresent(agentName);
+        }
+
+        sendBrokerCommand("RESET_SESSION");
+        sendSpaceCommand("RESET_SESSION");
+
+        buyerCount = 0;
+        dealerCount = 0;
+        dealsClosed = 0;
+        failedDealsCount = 0;
+        totalRevenue = 0;
+        totalFixedFees = 0;
+        totalCommission = 0;
+        activeSessions = 0;
+        currentCycle = 0;
+        isAutoPlay = true;
+
+        buyerAgents.clear();
+        dealerAgents.clear();
+        waitingBuyerAgents.clear();
+        registeredBuyerNames.clear();
+        registeredDealerNames.clear();
+        manualBuyerAgents.clear();
+        failedDeals.clear();
+        failureReasonCounts.clear();
+        sessionMetaMap.clear();
+        sessionPoints.clear();
+        agentPoints.clear();
+        sessionLastPrice.clear();
+        listingModelMap.clear();
+
+        buyerCountLabel.setText("0");
+        dealerCountLabel.setText("0");
+        transactionCountLabel.setText("0");
+        failedDealsCountLabel.setText("0");
+        revenueLabel.setText("RM 0.00");
+        activeSessionsLabel.setText("0");
+        activeSessionsLabelMini.setText("0");
+        fixedFeesLabel.setText("RM 0");
+        fixedFeesLabelMini.setText("RM 0");
+        commissionLabel.setText("RM 0");
+        commissionLabelMini.setText("RM 0");
+        if (playPauseBtn != null) {
+            playPauseBtn.setText("Pause");
+        }
+
+        logArea.clear();
+        if (dashboardEventsArea != null) dashboardEventsArea.clear();
+        if (failuresArea != null) failuresArea.clear();
+        if (sessionsArea != null) sessionsArea.clear();
+        if (failureReportArea != null) {
+            failureReportArea.setText("Failure summary\n----------------\nNo failed negotiations yet.");
+        }
+        if (manualLogArea != null) manualLogArea.clear();
+        if (manualBuyerSelect != null) manualBuyerSelect.setValue(null);
+        if (manualDealerSelect != null) {
+            manualDealerSelect.setValue(null);
+            manualDealerSelect.getItems().clear();
+        }
+        if (visualiserSessionSelect != null) {
+            visualiserSessionSelect.setValue(null);
+            visualiserSessionSelect.getItems().clear();
+        }
+
+        updateBuyerStatus();
+        updateDealerStatus();
+        updateNegotiationControlStatus();
+        refreshNegotiationVisualiser();
+        loggerLog("Session cleared. Broker, space, agents, logs, metrics, and visualisers reset.");
+    }
+
+    private void killAgentIfPresent(String agentName) {
+        if (agentName == null || agentName.isBlank()) {
+            return;
+        }
+        try {
+            cc.getAgent(agentName).kill();
+        } catch (Exception ignored) {
         }
     }
 
@@ -2716,6 +2819,7 @@ public class MainUI extends Application {
         playPauseBtn = createBarButton("Pause", WARNING_ORANGE);
         Button stepBtn = createBarButton("Step Cycle", ACCENT_BLUE);
         Button stopBtn = createBarButton("Stop", ERROR_RED);
+        Button clearSessionBtn = createBarButton("Clear Session", "#64748b");
         Button sniffBtn = createBarButton("Sniffer", "#4f46e5");
 
         demoBtn.setOnAction(e -> createDemoScenario());
@@ -2748,6 +2852,7 @@ public class MainUI extends Application {
             updateNegotiationControlStatus();
             refreshNegotiationVisualiser();
         });
+        clearSessionBtn.setOnAction(e -> clearSession());
         sniffBtn.setOnAction(e -> launchSniffer(msg -> logArea.appendText(msg + "\n")));
 
         // ── Speed slider ──────────────────────────────────────────────────────
@@ -2798,7 +2903,7 @@ public class MainUI extends Application {
         updateDealerStatus();
         updateBuyerStatus();
 
-        bar.getChildren().addAll(demoBtn, startBtn, playPauseBtn, stepBtn, stopBtn, sniffBtn,
+        bar.getChildren().addAll(demoBtn, startBtn, playPauseBtn, stepBtn, stopBtn, clearSessionBtn, sniffBtn,
                 sep2, speedBox,
                 sep, negotiationControlStatusLabel);
         return bar;
